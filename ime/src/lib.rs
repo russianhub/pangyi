@@ -8,6 +8,7 @@
 pub mod cand;
 pub mod dict;
 pub mod emoji;
+mod gloss_override;
 pub mod settings;
 pub mod status;
 

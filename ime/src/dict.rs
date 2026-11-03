@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 static RAW: &str = include_str!("dict.tsv");
+// 俄语列可被 data/gloss-overrides.tsv 整条换掉（见 gloss_override）。
+// 只换 ru：词头、拼音、词频、行号不动，缩写键、自学习和自定义短语不用跟着改。
 
 /// 编译期生成的缩写键表（gen_abbr 产出）：每行「键 TAB 行号」，
 /// 行号 = dict.tsv 里该词的行号（1 起，表头不计）。
@@ -468,11 +470,12 @@ fn hit_of(line: &'static str) -> Option<Hit> {
     let mut it = line.split('\t');
     let word = it.next()?;
     let _trad = it.next()?;
-    let _py = it.next()?;
+    let py = it.next()?;
     let disp = it.next()?;
     let _pos = it.next()?;
     let freq: u64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let ru = it.next().unwrap_or("");
+    let ru = crate::gloss_override::ru_for(word, py, disp, ru);
     let _ini = it.next();
     let src = it.next().unwrap_or("");
     let tier = match src {
@@ -1061,7 +1064,15 @@ fn line_word(line: &str) -> &str {
 }
 
 fn line_ru(line: &str) -> &str {
-    line.split('\t').nth(6).unwrap_or("")
+    let mut it = line.split('\t');
+    let word = it.next().unwrap_or("");
+    let _trad = it.next();
+    let py = it.next().unwrap_or("");
+    let disp = it.next().unwrap_or("");
+    let _pos = it.next();
+    let _freq = it.next();
+    let ru = it.next().unwrap_or("");
+    crate::gloss_override::ru_for(word, py, disp, ru)
 }
 
 fn line_py(line: &str) -> &str {
