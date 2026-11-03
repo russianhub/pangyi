@@ -436,16 +436,11 @@ mod tests {
             "{}",
             gloss("mo", "没")
         );
-        assert!(
-            gloss("chang", "长").contains("длин"),
-            "{}",
-            gloss("chang", "长")
-        );
-        assert!(
-            gloss("zhang", "长").contains("раст"),
-            "{}",
-            gloss("zhang", "长")
-        );
+        // 重音是 и 后面的 U+0301，「длин」不再是连续子串。
+        assert_eq!(gloss("chang", "长"), "дли́нный");
+        let zhang = gloss("zhang", "长");
+        assert!(zhang.contains("ста"), "{zhang}");
+        assert!(!zhang.contains("длин"), "{zhang}");
         assert!(
             gloss("kuai", "会").contains("бухгалт"),
             "{}",
