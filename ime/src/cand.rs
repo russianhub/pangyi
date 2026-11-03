@@ -387,17 +387,22 @@ pub unsafe fn ru_sense_next() {
     if alive() { let _ = InvalidateRect(hwnd(), None, TRUE); }
 }
 
-/// pick_text 用：word 上屏时的俄语串。规则：
-/// 在 ITEMS 找到该词且它是高亮行（按词比对，防页面里同词重复候选）且
-/// 俄语侧选中 → 当前义项；找到但非高亮行（数字键选别的行）→ 义项 0；
-/// 找不到 → None（调用方回退 dict::ru_of）；无义项 → None（回退词本身）。
+/// 选中行已经解析好的俄语释义。只认高亮这一行：页面里两个「重」读音不同，
+/// 按汉字找第一行会把另一行的义项拿来上屏。这一行没有释义就返回 None，
+/// 调用方回退汉字本身，不再去词典借别的读音。
 pub unsafe fn ru_commit_for(word: &str) -> Option<String> {
     let g = ITEMS.lock().unwrap();
-    let it = g.iter().find(|it| it.word == word)?;
+    let sel = SEL.load(Ordering::Relaxed);
+    let it = g.get(sel).filter(|it| it.word == word)?;
     let senses = senses_of(it);
-    if senses.is_empty() { return None; }
-    let is_sel = g.get(SEL.load(Ordering::Relaxed)).map(|x| x.word == word).unwrap_or(false);
-    let k = if is_sel && ru_sel() { RU_SENSE.load(Ordering::Relaxed) % senses.len() } else { 0 };
+    if senses.is_empty() {
+        return None;
+    }
+    let k = if ru_sel() {
+        RU_SENSE.load(Ordering::Relaxed) % senses.len()
+    } else {
+        0
+    };
     Some(senses[k].to_string())
 }
 
@@ -939,73 +944,226 @@ unsafe fn v_geom(dc: HDC) -> Option<(i32, i32, i32, i32, Layout)> {
     Some((y, lay.row_h, x_word, x_ru, lay))
 }
 
-/// 鼠标点 (x, y)（客户区坐标）落在哪一行、哪一侧：(行号, 是否俄语列)。
-/// 点不到候选行返回 None。索引列和词列都算中文侧。
-pub unsafe fn hit_test(x: i32, y: i32) -> Option<(usize, bool)> {
-    let h = hwnd();
-    let dc = GetDC(h);
-    if dc.0 == 0 { return None; }
-    let r = v_geom(dc);
-    if dc.0 != 0 { let _ = ReleaseDC(h, dc); }
-    let (y0, row_h, _x_word, x_ru, _lay) = r?;
-    let dy = y - y0;
-    if dy < 0 { return None; }
-    let i = (dy / row_h) as usize;
-    if i >= ITEMS.lock().unwrap().len() { return None; }
-    if x >= x_ru {
-        Some((i, true))
-    } else if x >= 0 {
-        // 俄语列左边整块（含序号、词列）都算中文侧，点空白也能选
-        Some((i, false))
-    } else {
-        None
+/// 一页里真正画出来的条数：设置里的候选个数，并且数字键最多到 9。
+fn visible_count(item_count: usize, limit: usize) -> usize {
+    item_count.min(limit).min(9)
+}
+
+fn contains_point(rect: RECT, point: (i32, i32)) -> bool {
+    point.0 >= rect.left && point.0 < rect.right && point.1 >= rect.top && point.1 < rect.bottom
+}
+
+fn clip_rect(rect: RECT, client: RECT) -> Option<RECT> {
+    let clipped = RECT {
+        left: rect.left.max(client.left),
+        top: rect.top.max(client.top),
+        right: rect.right.min(client.right),
+        bottom: rect.bottom.min(client.bottom),
+    };
+    (clipped.left < clipped.right && clipped.top < clipped.bottom).then_some(clipped)
+}
+
+/// 页脚盖住的那一截不能当候选点。bottom 用 saturating，负坐标工作区也不会下溢。
+fn exclude_footer(client: RECT, footer_space: i32) -> RECT {
+    RECT {
+        bottom: client.bottom.saturating_sub(footer_space.max(0)).max(client.top),
+        ..client
     }
 }
 
-/// 鼠标悬停命中（只画高亮，不改变点击语义）：竖排直接走 hit_test；
-/// 横排所有条目共一行，hit_test 的 y→行公式会把整行都判成第 0 条 ——
-/// 改按条目 x 跨度找（compute_layout 里和 WM_PAINT 同一套累加）。
-unsafe fn hover_at(x: i32, y: i32) -> Option<(usize, bool)> {
-    if !crate::settings::horizontal() {
-        return hit_test(x, y);
+/// 横排第 index 条的点击矩形。widths 是每条实测宽度，不是整列均分。
+fn horizontal_item_rect(
+    index: usize,
+    widths: &[i32],
+    origin: (i32, i32),
+    row_h: i32,
+    spacing: (i32, i32),
+) -> Option<RECT> {
+    let width = *widths.get(index)?;
+    if width <= 0 || row_h <= 0 {
+        return None;
     }
+    let (gap, inset) = spacing;
+    let x = widths[..index]
+        .iter()
+        .fold(origin.0, |x, width| x.saturating_add(*width).saturating_add(gap));
+    Some(RECT {
+        left: x.saturating_sub(inset),
+        top: origin.1,
+        right: x.saturating_add(width).saturating_add(inset),
+        bottom: origin.1.saturating_add(row_h),
+    })
+}
+
+fn horizontal_hit(
+    point: (i32, i32),
+    widths: &[i32],
+    origin: (i32, i32),
+    row_h: i32,
+    spacing: (i32, i32),
+) -> Option<usize> {
+    (0..widths.len()).find(|&i| {
+        horizontal_item_rect(i, widths, origin, row_h, spacing)
+            .is_some_and(|r| contains_point(r, point))
+    })
+}
+
+/// 竖排一行的中文侧或俄语侧。俄语侧宽度是这一行释义的实测宽度；
+/// 空释义（gloss_w <= 0）没有俄语点击区。超出可见行数的行没有矩形。
+fn vertical_item_rect(
+    index: usize,
+    count: usize,
+    russian_side: bool,
+    origin: (i32, i32),
+    row_h: i32,
+    gloss_w: i32,
+    client: RECT,
+) -> Option<RECT> {
+    if index >= count || row_h <= 0 {
+        return None;
+    }
+    let (x_ru, y0) = origin;
+    let top = y0.saturating_add((index as i32).saturating_mul(row_h));
+    clip_rect(
+        RECT {
+            left: if russian_side { x_ru } else { client.left },
+            top,
+            right: if russian_side {
+                x_ru.saturating_add(gloss_w.max(0))
+            } else {
+                x_ru
+            },
+            bottom: top.saturating_add(row_h),
+        },
+        client,
+    )
+}
+
+/// 页码药丸占的底边。只有一页时没有页脚。窗口被工作区裁短时，
+/// 页脚画在客户区底部，会盖住本来的候选行，那一块不能上屏。
+unsafe fn footer_space(dc: HDC) -> i32 {
+    if PAGE_TOT.load(Ordering::Relaxed) <= 1 {
+        return 0;
+    }
+    sc(PAD) + measure(dc, font(ANNO_PX), "x").1 + sc(ROW_PAD)
+}
+
+/// 这一行俄语列实际画出来的宽度。空释义是 0（点上去不算俄语侧）。
+/// 选中行且在俄语侧时跟滑动窗走，和 WM_PAINT 同一串。
+unsafe fn row_gloss_width(dc: HDC, index: usize) -> i32 {
+    let disp = {
+        let g = ITEMS.lock().unwrap();
+        let Some(it) = g.get(index) else { return 0 };
+        let k = if index == SEL.load(Ordering::Relaxed) && RU_SEL.load(Ordering::Relaxed) {
+            RU_SENSE.load(Ordering::Relaxed)
+        } else {
+            0
+        };
+        sense_window(it, k).3
+    };
+    if disp.is_empty() {
+        0
+    } else {
+        measure(dc, font(ANNO_PX), &disp).0
+    }
+}
+
+/// 鼠标点 (x, y)（客户区坐标）落在哪一行、哪一侧：(行号, 是否俄语列)。
+/// 只认可见候选和这一行实际画出的释义：窗口外、页脚、空释义、藏起来的行都不算。
+/// 索引列和词列都算中文侧。横排按每条实测宽度，不把整行都当成第 0 条。
+pub unsafe fn hit_test(x: i32, y: i32) -> Option<(usize, bool)> {
     let h = hwnd();
+    let mut client = RECT::default();
+    if GetClientRect(h, &mut client).is_err() || !contains_point(client, (x, y)) {
+        return None;
+    }
     let dc = GetDC(h);
-    if dc.0 == 0 { return None; }
-    let items = ITEMS.lock().unwrap();
-    if items.is_empty() { drop(items); let _ = ReleaseDC(h, dc); return None; }
-    let lay = compute_layout(dc, &items);
-    drop(items);
-    // 和 v_geom 同款：顶行（拼音 / ☁ 提示）占多高就先加多高
-    let mut y0 = sc(PAD);
-    let pre = PREEDIT.lock().unwrap().clone();
-    let sent = SENTENCE.lock().unwrap().clone();
-    if !pre.is_empty() || sent.is_some() {
-        let f_anno = font(ANNO_PX);
-        let (_, ph) = measure(dc, f_anno, "x");
-        y0 += ph + sc(ROW_PAD) * 2;
+    if dc.0 == 0 {
+        return None;
     }
+    let result = (|| {
+        let client = exclude_footer(client, footer_space(dc));
+        if !contains_point(client, (x, y)) {
+            return None;
+        }
+        let (y0, row_h, _x_word, x_ru, lay) = v_geom(dc)?;
+        let count = visible_count(ITEMS.lock().unwrap().len(), crate::settings::max_cands());
+        if count == 0 || row_h <= 0 {
+            return None;
+        }
+        if crate::settings::horizontal() {
+            let pad = sc(PAD);
+            let origin = (pad + pad / 2, y0);
+            let spacing = (sc(GAP), pad / 2);
+            let widths: Vec<i32> = lay.item_w.iter().take(count).copied().collect();
+            let i = horizontal_hit((x, y), &widths, origin, row_h, spacing)?;
+            let rect = horizontal_item_rect(i, &widths, origin, row_h, spacing)?;
+            let rect = clip_rect(rect, client)?;
+            return contains_point(rect, (x, y)).then_some((i, false));
+        }
+        let dy = y - y0;
+        if dy < 0 {
+            return None;
+        }
+        let i = (dy / row_h) as usize;
+        if i >= count {
+            return None;
+        }
+        let gloss_w = row_gloss_width(dc, i);
+        for ru in [true, false] {
+            if vertical_item_rect(i, count, ru, (x_ru, y0), row_h, gloss_w, client)
+                .is_some_and(|rect| contains_point(rect, (x, y)))
+            {
+                return Some((i, ru));
+            }
+        }
+        None
+    })();
     let _ = ReleaseDC(h, dc);
-    if y < y0 || y >= y0 + lay.row_h { return None; }
-    for (i, (l, r)) in lay.hitem.iter().enumerate() {
-        if x >= *l && x < *r { return Some((i, false)); }
-    }
-    None
+    result
+}
+
+/// 悬停和点击用同一套几何（v4.5.0：画的和点的必须一致）。
+unsafe fn hover_at(x: i32, y: i32) -> Option<(usize, bool)> {
+    hit_test(x, y)
 }
 
 /// 第 row 行中文侧/俄语侧的可点击矩形（客户区坐标），测试台架算点击点用。
+/// 和 hit_test 同一套裁剪：中心点一定落在真正能点中的区域里。
+/// 空释义的俄语侧、看不见的行返回 None。
 pub unsafe fn hit_rect(row: usize, ru: bool) -> Option<(i32, i32, i32, i32)> {
     let h = hwnd();
+    let mut client = RECT::default();
+    if GetClientRect(h, &mut client).is_err() {
+        return None;
+    }
     let dc = GetDC(h);
-    if dc.0 == 0 { return None; }
-    let r = v_geom(dc);
-    if dc.0 != 0 { let _ = ReleaseDC(h, dc); }
-    let (y0, row_h, x_word, x_ru, _lay) = r?;
-    if row >= ITEMS.lock().unwrap().len() { return None; }
-    let top = y0 + row as i32 * row_h;
-    // v4.8.0 去拼音列后中文侧矩形跨整个词列（x_word..x_ru），中心必落在中文侧；
-    // 旧固定 60px 宽在窄词（word_w+gap<30）时中心会越过 x_ru 翻到俄语侧
-    Some(if ru { (x_ru, top, x_ru + 60, top + row_h) } else { (x_word, top, x_ru, top + row_h) })
+    if dc.0 == 0 {
+        return None;
+    }
+    let result = (|| {
+        let client = exclude_footer(client, footer_space(dc));
+        let (y0, row_h, _x_word, x_ru, lay) = v_geom(dc)?;
+        let count = visible_count(ITEMS.lock().unwrap().len(), crate::settings::max_cands());
+        if crate::settings::horizontal() {
+            if ru {
+                return None;
+            }
+            let pad = sc(PAD);
+            let widths: Vec<i32> = lay.item_w.iter().take(count).copied().collect();
+            let r = horizontal_item_rect(row, &widths, (pad + pad / 2, y0), row_h, (sc(GAP), pad / 2))?;
+            let r = clip_rect(r, client)?;
+            return Some((r.left, r.top, r.right, r.bottom));
+        }
+        if row >= count {
+            return None;
+        }
+        let gloss_w = row_gloss_width(dc, row);
+        let r = vertical_item_rect(row, count, ru, (x_ru, y0), row_h, gloss_w, client)?;
+        Some((r.left, r.top, r.right, r.bottom))
+    })();
+    let _ = ReleaseDC(h, dc);
+    result
 }
 
 // ---- 测试台架专用导出（side_e2e 用 GetProcAddress 拿，不挂在正常 API 上）----
@@ -1119,13 +1277,41 @@ pub unsafe fn at(i: usize) -> Option<String> {
 
 pub unsafe fn count() -> usize { ITEMS.lock().unwrap().len() }
 
+/// 把候选窗放进光标所在显示器的工作区。保留副屏的负坐标，避开任务栏。
+/// 下方放不下就翻到光标上方；窗口比工作区还大就缩进工作区里。
+fn fit_popup(anchor: (i32, i32), size: (i32, i32), work: RECT, margin: i32, above_gap: i32) -> RECT {
+    let span_w = work.right.saturating_sub(work.left).max(1);
+    let span_h = work.bottom.saturating_sub(work.top).max(1);
+    let mx = margin.max(0).min((span_w - 1) / 2);
+    let my = margin.max(0).min((span_h - 1) / 2);
+    let left = work.left.saturating_add(mx);
+    let top = work.top.saturating_add(my);
+    let right = work.right.saturating_sub(mx).max(left.saturating_add(1));
+    let bottom = work.bottom.saturating_sub(my).max(top.saturating_add(1));
+    let width = size.0.max(1).min(right.saturating_sub(left).max(1));
+    let height = size.1.max(1).min(bottom.saturating_sub(top).max(1));
+    let x = anchor.0.clamp(left, right.saturating_sub(width).max(left));
+    let y = if anchor.1.saturating_add(height) > bottom {
+        anchor.1.saturating_sub(height).saturating_sub(above_gap.max(0))
+    } else {
+        anchor.1
+    }
+    .clamp(top, bottom.saturating_sub(height).max(top));
+    RECT {
+        left: x,
+        top: y,
+        right: x.saturating_add(width),
+        bottom: y.saturating_add(height),
+    }
+}
+
 pub unsafe fn show_at(x: i32, y: i32) {
     // 每次显示前都确认窗口还在：宿主进程换了线程、原来的窗口没了就重建一个，
     // 而不是直接 return（那会让候选窗永久消失）
     if !alive() { init(); }
     if !alive() { return; }
     let h = hwnd();
-    let n = ITEMS.lock().unwrap().len().min(crate::settings::max_cands());
+    let n = visible_count(ITEMS.lock().unwrap().len(), crate::settings::max_cands());
     if n == 0 { hide(); return; }
     let dc = GetDC(h);
     let (mut cw, mut ch) = (sc(400), sc(40));
@@ -1136,14 +1322,28 @@ pub unsafe fn show_at(x: i32, y: i32) {
         ch = lay.height;
         let _ = ReleaseDC(h, dc);
     }
-    // 夹进屏幕：右边超出就左移，下方放不下就翻到光标上方
-    let sw = GetSystemMetrics(SM_CXSCREEN);
-    let sh = GetSystemMetrics(SM_CYSCREEN);
-    let mut px = x;
-    let mut py = y;
-    if px + cw > sw - 4 { px = (sw - cw - 4).max(0); }
-    if py + ch > sh - 4 { py = (y - ch - sc(30)).max(0); }
-    if py < 0 { py = 0; }
+    // SM_CXSCREEN / SM_CYSCREEN 只有主屏，副屏和负坐标会被夹到主屏甚至夹成 0。
+    // 用光标所在显示器的工作区（rcWork 已经扣掉任务栏）。
+    let monitor = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let work = if GetMonitorInfoW(monitor, &mut info).as_bool() {
+        info.rcWork
+    } else {
+        RECT {
+            left: 0,
+            top: 0,
+            right: GetSystemMetrics(SM_CXSCREEN).max(1),
+            bottom: GetSystemMetrics(SM_CYSCREEN).max(1),
+        }
+    };
+    let bounds = fit_popup((x, y), (cw, ch), work, sc(4), sc(30));
+    let px = bounds.left;
+    let py = bounds.top;
+    cw = bounds.right - bounds.left;
+    ch = bounds.bottom - bounds.top;
     let rgn = CreateRoundRectRgn(0, 0, cw + 1, ch + 1, sc(WIN_RADIUS) * 2, sc(WIN_RADIUS) * 2);
     let _ = SetWindowRgn(h, rgn, TRUE);
     // 只在“从隐藏变显示”的那一次抬高到置顶带的最前面（保证能盖住置顶窗口），
@@ -1164,4 +1364,191 @@ pub unsafe fn hide() {
     HOT_RU.store(false, Ordering::Relaxed);
     TRACKED.store(false, Ordering::Relaxed);
     if alive() { let _ = ShowWindow(hwnd(), SW_HIDE); }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    fn bounds(anchor: (i32, i32), size: (i32, i32), work: RECT) -> (i32, i32, i32, i32) {
+        let r = fit_popup(anchor, size, work, 4, 30);
+        (r.left, r.top, r.right, r.bottom)
+    }
+
+    #[test]
+    fn right_monitor_keeps_its_screen_coordinates() {
+        let work = RECT { left: 1920, top: 0, right: 3840, bottom: 1040 };
+        assert_eq!(bounds((2500, 100), (400, 200), work), (2500, 100, 2900, 300));
+        assert_eq!(bounds((3800, 100), (400, 200), work), (3436, 100, 3836, 300));
+    }
+
+    #[test]
+    fn left_monitor_preserves_negative_coordinates() {
+        let work = RECT { left: -1920, top: 0, right: 0, bottom: 1040 };
+        assert_eq!(bounds((-1700, 100), (400, 200), work), (-1700, 100, -1300, 300));
+        assert_eq!(bounds((-100, 100), (400, 200), work), (-404, 100, -4, 300));
+    }
+
+    #[test]
+    fn monitor_above_primary_preserves_negative_y() {
+        let work = RECT { left: 0, top: -1200, right: 1920, bottom: -40 };
+        assert_eq!(bounds((200, -1100), (400, 200), work), (200, -1100, 600, -900));
+    }
+
+    #[test]
+    fn bottom_taskbar_moves_popup_above_caret() {
+        let work = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
+        assert_eq!(bounds((200, 1000), (400, 250), work), (200, 720, 600, 970));
+    }
+
+    #[test]
+    fn top_and_left_taskbars_define_the_usable_origin() {
+        let work = RECT { left: 80, top: 40, right: 1920, bottom: 1080 };
+        assert_eq!(bounds((5, 5), (400, 200), work), (84, 44, 484, 244));
+    }
+
+    #[test]
+    fn oversized_popup_is_bounded_by_small_work_area() {
+        let work = RECT { left: -800, top: -600, right: 0, bottom: 0 };
+        assert_eq!(bounds((-300, -100), (2000, 1500), work), (-796, -596, -4, -4));
+    }
+
+    #[test]
+    fn tiny_work_area_and_empty_size_do_not_panic() {
+        let work = RECT { left: -10, top: -10, right: -9, bottom: -9 };
+        assert_eq!(bounds((0, 0), (0, 0), work), (-10, -10, -9, -9));
+    }
+
+    #[test]
+    fn horizontal_clicks_select_the_candidate_under_the_pointer() {
+        let widths = [80, 120, 60];
+        for (point, expected) in [((12, 35), 0), ((150, 35), 1), ((260, 35), 2)] {
+            assert_eq!(horizontal_hit(point, &widths, (12, 30), 24, (8, 4)), Some(expected));
+        }
+    }
+
+    #[test]
+    fn horizontal_header_annotation_and_outer_padding_are_not_candidates() {
+        for point in [(12, 29), (12, 54), (7, 35), (292, 35), (-1, 35)] {
+            assert_eq!(horizontal_hit(point, &[80, 120, 60], (12, 30), 24, (8, 4)), None);
+        }
+    }
+
+    #[test]
+    fn horizontal_shared_edge_belongs_to_the_next_candidate() {
+        assert_eq!(horizontal_hit((95, 35), &[80, 120], (12, 30), 24, (8, 4)), Some(0));
+        assert_eq!(horizontal_hit((96, 35), &[80, 120], (12, 30), 24, (8, 4)), Some(1));
+    }
+
+    #[test]
+    fn horizontal_hit_rect_matches_the_painted_candidate_extent() {
+        let r = horizontal_item_rect(1, &[80, 120, 60], (12, 30), 24, (8, 4)).unwrap();
+        assert_eq!((r.left, r.top, r.right, r.bottom), (96, 30, 224, 54));
+        assert!(horizontal_item_rect(3, &[80, 120, 60], (12, 30), 24, (8, 4)).is_none());
+    }
+
+    #[test]
+    fn visible_candidates_respect_page_setting_and_digit_limit() {
+        for (items, limit, expected) in [(0, 9, 0), (9, 3, 3), (2, 7, 2), (12, 20, 9)] {
+            assert_eq!(visible_count(items, limit), expected);
+        }
+    }
+
+    #[test]
+    fn clipped_horizontal_rect_excludes_invisible_candidates() {
+        let client = RECT { left: 0, top: 0, right: 150, bottom: 80 };
+        let second = horizontal_item_rect(1, &[80, 120, 60], (12, 30), 24, (8, 4)).unwrap();
+        let second = clip_rect(second, client).unwrap();
+        assert_eq!((second.left, second.top, second.right, second.bottom), (96, 30, 150, 54));
+        assert!(contains_point(second, (149, 53)));
+        assert!(!contains_point(second, (150, 53)));
+        let third = horizontal_item_rect(2, &[80, 120, 60], (12, 30), 24, (8, 4)).unwrap();
+        assert!(clip_rect(third, client).is_none());
+    }
+
+    #[test]
+    fn short_gloss_target_matches_its_visible_width() {
+        let client = RECT { left: 0, top: 0, right: 132, bottom: 80 };
+        let r = vertical_item_rect(0, 3, true, (100, 30), 24, 18, client).unwrap();
+        assert_eq!((r.left, r.top, r.right, r.bottom), (100, 30, 118, 54));
+        assert!(contains_point(r, (100, 30)));
+        assert!(contains_point(r, (117, 53)));
+        for point in [(99, 40), (118, 40), (110, 54)] {
+            assert!(!contains_point(r, point));
+        }
+    }
+
+    #[test]
+    fn empty_gloss_has_no_russian_target_and_hidden_rows_have_no_target() {
+        let client = RECT { left: 0, top: 0, right: 132, bottom: 200 };
+        assert!(vertical_item_rect(0, 3, true, (100, 30), 24, 0, client).is_none());
+        let chinese = vertical_item_rect(0, 3, false, (100, 30), 24, 0, client).unwrap();
+        assert!(contains_point(chinese, (5, 40)));
+        assert!(!contains_point(chinese, (100, 40)));
+        for ru in [false, true] {
+            assert!(vertical_item_rect(3, 3, ru, (100, 30), 24, 18, client).is_none());
+        }
+    }
+
+    #[test]
+    fn clipped_vertical_rectangles_preserve_side_boundary() {
+        let client = RECT { left: 0, top: 0, right: 105, bottom: 43 };
+        let chinese = vertical_item_rect(0, 3, false, (100, 30), 24, 18, client).unwrap();
+        let russian = vertical_item_rect(0, 3, true, (100, 30), 24, 18, client).unwrap();
+        assert_eq!((chinese.left, chinese.top, chinese.right, chinese.bottom), (0, 30, 100, 43));
+        assert_eq!((russian.left, russian.top, russian.right, russian.bottom), (100, 30, 105, 43));
+        assert!(!contains_point(chinese, (100, 40)));
+        assert!(contains_point(russian, (100, 40)));
+        assert!(!contains_point(russian, (105, 40)));
+        assert!(vertical_item_rect(1, 3, false, (100, 30), 24, 18, client).is_none());
+    }
+
+    #[test]
+    fn clipped_popup_footer_cannot_commit_the_candidate_beneath_it() {
+        let client = RECT { left: 0, top: 0, right: 160, bottom: 70 };
+        let candidates = exclude_footer(client, 24);
+        assert_eq!(candidates.bottom, 46);
+        assert!(contains_point(client, (30, 50)));
+        assert!(!contains_point(candidates, (30, 50)));
+        let vertical = vertical_item_rect(0, 3, false, (100, 30), 24, 18, candidates).unwrap();
+        let horizontal = horizontal_item_rect(0, &[80], (12, 30), 24, (8, 4)).unwrap();
+        let horizontal = clip_rect(horizontal, candidates).unwrap();
+        for rect in [vertical, horizontal] {
+            assert_eq!(rect.bottom, 46);
+            assert!(contains_point(rect, (30, 45)));
+            assert!(!contains_point(rect, (30, 46)));
+        }
+    }
+
+    #[test]
+    fn selected_row_gloss_is_not_the_other_reading() {
+        let _guard = crate::lock_state();
+        unsafe {
+            set_items(vec![
+                Item { word: "重".into(), ru: "повторять".into(), fresh: false },
+                Item { word: "重".into(), ru: "тяжёлый".into(), fresh: false },
+            ]);
+            select(1);
+            set_ru_sel(true);
+            assert_eq!(ru_commit_for("重").as_deref(), Some("тяжёлый"));
+            // 空释义不能借上一行的读音。
+            set_items(vec![
+                Item { word: "重".into(), ru: "повторять".into(), fresh: false },
+                Item { word: "重".into(), ru: String::new(), fresh: false },
+            ]);
+            select(1);
+            set_ru_sel(true);
+            assert_eq!(ru_commit_for("重"), None);
+            set_items(vec![Item {
+                word: "重".into(),
+                ru: "повторять | тяжёлый".into(),
+                fresh: false,
+            }]);
+            set_ru_sel(true);
+            assert_eq!(ru_commit_for("重").as_deref(), Some("повторять"));
+            ru_sense_next();
+            assert_eq!(ru_commit_for("重").as_deref(), Some("тяжёлый"));
+            set_items(Vec::new());
+        }
+    }
 }

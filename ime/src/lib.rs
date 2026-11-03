@@ -247,6 +247,24 @@ fn refresh_page() {
     u.extend(ui);
 }
 
+/// 页内第 index 条的（汉字, 这一行已经解析好的俄语释义）。
+fn row_at(index: usize) -> Option<(String, String)> {
+    UI_CANDS.lock().unwrap().get(index).cloned()
+}
+
+/// 当前高亮行。候选窗还没同步时退回页内第一条，和以前 current() 失败就拿首条一样。
+fn selected_row() -> Option<(String, String)> {
+    let ui = UI_CANDS.lock().unwrap();
+    if ui.is_empty() {
+        return None;
+    }
+    if unsafe { cand::count() } == 0 {
+        return ui.first().cloned();
+    }
+    let i = unsafe { cand::current_index() }.min(ui.len() - 1);
+    ui.get(i).cloned()
+}
+
 /// 翻页：delta = -1 上一页 / +1 下一页。返回是否真的翻动了
 ///（已经在头/尾页就返回 false，按键当没发生）。
 /// 微软拼音同款按键：PageUp/PageDown、`-`/`=`，上下方向键撞到页边界也翻。
@@ -314,35 +332,44 @@ impl TextService {
     /// ←/→ 选中「俄语侧」时，上屏内容换成该词的俄语释义：v4.9.0 起多个义项
     /// 按候选窗里高亮的那个义项上屏（→ 循环 / 鼠标点哪个义项出哪个）；
     /// 没译文的词照旧上中文（它的俄语列本来就是空的）。
-    fn pick_text(word: &str) -> String {
+    fn pick_text(word: &str, gloss: &str) -> String {
         if unsafe { cand::ru_sel() } && !crate::settings::horizontal() {
-            unsafe { cand::ru_commit_for(word) }
-                .or_else(|| dict::ru_of(word).map(|r| r.to_string()))
-                .unwrap_or_else(|| word.to_string())
+            commit_surface(word, gloss, true, unsafe { cand::ru_sense() }, 0, emoji::is_emoji(word))
         } else {
             word.to_string()
         }
     }
 
-    /// 把某个词上屏（换掉当前组合）
-    fn commit_word(&self, pic: Option<&ITfContext>, word: &str) {
+    /// 把某个词上屏（换掉当前组合）。gloss 是这一行候选里已经解析好的释义，
+    /// 不再按汉字回词典（多音字会拿到另一个读音）。
+    /// highlighted：这一行就是当前高亮行时，俄语侧沿用已经循环到的义项。
+    fn commit_word(&self, pic: Option<&ITfContext>, word: &str, gloss: &str, highlighted: bool) {
         // 表情不进自学习：记进 learned.txt 会变成「关掉表情模式还蹦出来」的怪候选
         if !emoji::is_emoji(word) {
             dict::note_choice(word); // 自学习：下次把这个词排前面
         }
         // v4.5.0 选中俄语侧：只上屏俄语，中文不输入（逐字翻译不再重复拼）
         // v4.4.0 逐字翻译：俄语第一释义跟在词后面；整句模式：记进句子缓冲
-        dlog!("commit_word word={word} ru_sel={} horizontal={}", unsafe { cand::ru_sel() }, crate::settings::horizontal());
-        let text = if unsafe { cand::ru_sel() } && !crate::settings::horizontal() {
-            Self::pick_text(word)
-        } else if crate::settings::trmode() == 1 {
-            match dict::ru_of(word) {
-                Some(ru) => format!("{word} {ru}"),
-                None => word.to_string(),
-            }
+        let ru_side = unsafe { cand::ru_sel() } && !crate::settings::horizontal();
+        let sense = if ru_side && highlighted {
+            unsafe { cand::ru_sense() }
         } else {
-            word.to_string()
+            0
         };
+        dlog!(
+            "commit_word word={word} ru_sel={} horizontal={} highlighted={}",
+            unsafe { cand::ru_sel() },
+            crate::settings::horizontal(),
+            highlighted
+        );
+        let text = commit_surface(
+            word,
+            gloss,
+            ru_side,
+            sense,
+            crate::settings::trmode(),
+            emoji::is_emoji(word),
+        );
         self.commit_text(pic, &text);
         sent_push(word);
     }
@@ -570,9 +597,41 @@ impl TextService {
 }
 
 impl ITfCompositionSink_Impl for TextService {
-    fn OnCompositionTerminated(&self, _ec: u32, _c: Option<&ITfComposition>) -> Result<()> {
+    fn OnCompositionTerminated(&self, _ec: u32, c: Option<&ITfComposition>) -> Result<()> {
+        // 宿主取消组合后，拼音缓冲和候选一起失效。主动上屏/取消时组合已经被
+        // take()，这里看到的是 None，不再清句子缓冲。旧组合迟到的通知不能取消新组合。
+        // 接口相等比较会 QueryInterface，必须在组合锁外面做。
         dlog!("OnCompositionTerminated fired（组合被宿主/TSF 终结）");
-        *COMPOSITION.lock().unwrap() = None;
+        let current = COMPOSITION.lock().unwrap().clone();
+        let Some(current) = current else { return Ok(()) };
+        if c != Some(&current) {
+            return Ok(());
+        }
+        let ended = {
+            let mut slot = COMPOSITION.lock().unwrap();
+            // 比较身份期间如果重入换成了新组合，不能把新的取走。
+            if slot.as_ref().map(windows::core::Interface::as_raw)
+                != Some(windows::core::Interface::as_raw(&current))
+            {
+                return Ok(());
+            }
+            slot.take()
+        };
+        drop(ended);
+        self.buf.borrow_mut().clear();
+        self.cursor.set(0);
+        UI_CANDS.lock().unwrap().clear();
+        ALL_CANDS.lock().unwrap().clear();
+        PAGE.store(0, Ordering::Relaxed);
+        *PENDING_CAND.lock().unwrap() = None;
+        SENT.lock().unwrap().clear();
+        unsafe {
+            cand::set_preedit("");
+            cand::set_sentence(None);
+            cand::set_items(Vec::new());
+            cand::set_page(0, 1);
+            cand_hide();
+        }
         Ok(())
     }
 }
@@ -623,15 +682,15 @@ impl ITfKeyEventSink_Impl for TextService {
             dlog!("KeySink::OnTestKeyDown wparam={} 有修饰键，放行", wparam.0);
             return Ok(BOOL(0));
         }
-        let ch0 = wparam.0 as u8 as char;
-        if ch0.is_ascii_alphabetic() && crate::settings::english() {
+        let letter = letter_vk(wparam.0);
+        if letter.is_some() && crate::settings::english() {
             return Ok(BOOL(0));
         }
         // Shift / Caps + 字母：大写英文直通（微软一致 —— 用户原话「不能输入
         // 大写英文字母」）。没有拼音时直接放行，应用按键盘状态输出大写字母；
         // 有拼音时先 claim，OnKeyDown 里提交首选候选再放行（微软：拼音中间
         // 按 Shift+字母 = 首选上屏 + 大写字母）。
-        if ch0.is_ascii_alphabetic() && (shift_down() || caps_on()) {
+        if letter.is_some() && (shift_down() || caps_on()) {
             dlog!("KeySink::OnTestKeyDown wparam={} shift={} caps={} 大写分支", wparam.0, shift_down(), caps_on());
             let has_buf = !self.buf.borrow().is_empty();
             return Ok(BOOL(has_buf as i32));
@@ -680,35 +739,34 @@ impl ITfKeyEventSink_Impl for TextService {
         if command_modifier_down() {
             return Ok(BOOL(0));
         }
-        let ch = wparam.0 as u8 as char;
-        dlog!("KeySink::OnKeyDown wparam={} ch={ch:?}", wparam.0);
+        let letter = letter_vk(wparam.0);
+        dlog!("KeySink::OnKeyDown wparam={} letter={letter:?}", wparam.0);
 
         // Shift/Caps 大写字母：首选候选上屏 + 大写字母自己写进文档，然后吃掉
         // 按键（BOOL(1)）。不能走「提交后 return BOOL(0) 让应用输出」——实测
         // （fix_e2e 探针）TSF 下 claim 过的键 OnKeyDown 返回 FALSE 也到不了
         // 应用，标点分支原来就吃这个亏。没有拼音时 OnTestKeyDown 不 claim，
         // 键直接放行由应用输出大写，走不到这里。
-        if ch.is_ascii_alphabetic() && (shift_down() || caps_on()) {
+        if letter.is_some() && (shift_down() || caps_on()) {
             dlog!("KeySink::OnKeyDown wparam={} shift={} caps={} buf={:?} 大写分支", wparam.0, shift_down(), caps_on(), self.buf.borrow());
             if crate::settings::english() {
                 return Ok(BOOL(0));
             }
             if !self.buf.borrow().is_empty() {
-                let w = unsafe { cand::current() }
-                    .or_else(|| UI_CANDS.lock().unwrap().first().map(|(w, _)| w.clone()));
+                let row = selected_row();
                 self.buf.borrow_mut().clear();
                 self.cursor.set(0);
                 UI_CANDS.lock().unwrap().clear();
                 unsafe { cand_hide(); }
-                let letter = ch.to_ascii_uppercase();
-                match w {
-                    Some(w) => {
+                let letter = letter.unwrap().to_ascii_uppercase();
+                match row {
+                    Some((w, gloss)) => {
                         if !emoji::is_emoji(&w) {
                             dict::note_choice(&w);
                         }
                         sent_push(&w);
                         // v4.5.0：选中俄语侧时大写字母也跟在俄语后面
-                        self.commit_text(pic, &format!("{}{letter}", Self::pick_text(&w)));
+                        self.commit_text(pic, &format!("{}{letter}", Self::pick_text(&w, &gloss)));
                     }
                     // 没有候选：组合里只剩拼音，直接换成大写字母上屏
                     None => self.commit_text(pic, &letter.to_string()),
@@ -718,7 +776,7 @@ impl ITfKeyEventSink_Impl for TextService {
         }
 
         // 字母：进组合（v4.14.0 插在光标处 —— ←/→ 移过光标后，字母从那里接着打）
-        if ch.is_ascii_alphabetic() {
+        if let Some(ch) = letter {
             if crate::settings::english() { return Ok(BOOL(0)); }
             {
                 let mut b = self.buf.borrow_mut();
@@ -777,24 +835,27 @@ impl ITfKeyEventSink_Impl for TextService {
             if shift_down() { return Ok(BOOL(0)); }
             if !has_buf { return Ok(BOOL(0)); }
             let idx = (wparam.0 as usize) - 0x31;
-            let word = UI_CANDS.lock().unwrap().get(idx).map(|(w, _)| w.clone());
+            let highlighted = idx == unsafe { cand::current_index() };
+            let row = row_at(idx);
             // 理论上 claim() 只会放行当前页里真有的候选，这里再兜一次底
-            let Some(w) = word else { return Ok(BOOL(0)); };
+            let Some((w, gloss)) = row else { return Ok(BOOL(0)); };
             self.buf.borrow_mut().clear();
             self.cursor.set(0);
             UI_CANDS.lock().unwrap().clear();
             unsafe { cand_hide(); }
-            self.commit_word(pic, &w);
+            self.commit_word(pic, &w, &gloss, highlighted);
             return Ok(BOOL(1));
         }
 
         // 方向键 / Tab：在候选里移动；撞到页边界自动翻页
         // （第 1 个再往上 = 上一页的最后一条，最后一个再往下 = 下一页第 1 条，
         //   和微软拼音一样看着一页一页连起来翻）
+        // 没有候选时 Tab 必须放行：OnTestKeyDown 已经不 claim，这里再兜一次。
         if matches!(wparam.0 as u32, 0x26 | 0x28 | 0x09) {
-            if !has_buf { return Ok(BOOL(0)); }
-            // 没有候选可动就让应用正常处理方向键/Tab（移动光标、切焦点）
-            if UI_CANDS.lock().unwrap().len() == 0 { return Ok(BOOL(0)); }
+            let n = UI_CANDS.lock().unwrap().len();
+            if buf_confirm(wparam.0 as u32, has_buf, n) == Some(BufConfirm::PassToApp) {
+                return Ok(BOOL(0));
+            }
             let up = (wparam.0 as u32) == 0x26;
             move_sel(if up { -1 } else { 1 });
             return Ok(BOOL(1));
@@ -851,18 +912,37 @@ impl ITfKeyEventSink_Impl for TextService {
             return Ok(BOOL(0));
         }
 
-        // 回车 / 空格：上屏当前选中的候选
+        // 回车 / 空格：有候选就上屏当前行；没有候选就把原始字母走 DoneSession
+        // 提交并结束组合。原始串不进自学习（commit_text 不记 note_choice）。
         if wparam.0 == 0x0D || wparam.0 == 0x20 {
-            if !has_buf { return Ok(BOOL(0)); }
-            let w = unsafe { cand::current() }
-                .or_else(|| UI_CANDS.lock().unwrap().first().map(|(w, _)| w.clone()));
-            self.buf.borrow_mut().clear();
-            self.cursor.set(0);
-            UI_CANDS.lock().unwrap().clear();
-            unsafe { cand_hide(); }
-            dlog!("上屏 word={:?}", w);
-            if let Some(w) = w { self.commit_word(pic, &w); }
-            return Ok(BOOL(1));
+            let n = UI_CANDS.lock().unwrap().len();
+            match buf_confirm(wparam.0 as u32, has_buf, n) {
+                Some(BufConfirm::CommitRaw) => {
+                    let raw = self.buf.replace(String::new());
+                    self.cursor.set(0);
+                    UI_CANDS.lock().unwrap().clear();
+                    unsafe {
+                        cand::set_preedit("");
+                        cand_hide();
+                    }
+                    dlog!("无候选上屏原始字母 {raw:?}");
+                    self.commit_text(pic, &raw);
+                    return Ok(BOOL(1));
+                }
+                Some(BufConfirm::CommitCandidate) => {
+                    let row = selected_row();
+                    self.buf.borrow_mut().clear();
+                    self.cursor.set(0);
+                    UI_CANDS.lock().unwrap().clear();
+                    unsafe { cand_hide(); }
+                    dlog!("上屏 row={row:?}");
+                    if let Some((w, gloss)) = row {
+                        self.commit_word(pic, &w, &gloss, true);
+                    }
+                    return Ok(BOOL(1));
+                }
+                _ => return Ok(BOOL(0)),
+            }
         }
 
         // ESC：取消这次输入（组合要真正结束掉，见 EndSession 的注释）
@@ -901,8 +981,7 @@ impl ITfKeyEventSink_Impl for TextService {
         // 理由同大写分支：claim 过的键 TSF 不会再交给应用，原来「return
         // BOOL(0) 放行」实测到不了应用（候选上屏了、标点被吞）。
         if has_buf && is_punct_vk(wparam.0 as u32) {
-            let w = unsafe { cand::current() }
-                .or_else(|| UI_CANDS.lock().unwrap().first().map(|(w, _)| w.clone()));
+            let row = selected_row();
             // v4.3.0：中文标点开且没按 Shift 时，标点转全角；Shift+标点 保持半角
             let c = vk_to_char(wparam.0 as u32).map(|c| {
                 if crate::settings::cnpunct() && !crate::settings::english() && !shift_down() {
@@ -915,19 +994,19 @@ impl ITfKeyEventSink_Impl for TextService {
             self.cursor.set(0);
             UI_CANDS.lock().unwrap().clear();
             unsafe { cand_hide(); }
-            match (w, c) {
-                (Some(w), Some(c)) => {
+            match (row, c) {
+                (Some((w, gloss)), Some(c)) => {
                     if !emoji::is_emoji(&w) {
                         dict::note_choice(&w);
                     }
                     // v4.5.0：选中俄语侧时只上屏俄语+标点，中文词照旧进句子缓冲
                     if unsafe { cand::ru_sel() } && !crate::settings::horizontal() {
-                        self.commit_text(pic, &format!("{}{c}", Self::pick_text(&w)));
+                        self.commit_text(pic, &format!("{}{c}", Self::pick_text(&w, &gloss)));
                         sent_push(&w);
-                    // 逐字翻译：俄语第一释义夹在词和标点之间
+                    // 逐字翻译：用这一行已经解析好的第一义项，不按汉字回查
                     } else if crate::settings::trmode() == 1 {
-                        let ru = dict::ru_of(&w).map(|r| format!(" {r}")).unwrap_or_default();
-                        self.commit_text(pic, &format!("{w}{ru}{c}"));
+                        let body = commit_surface(&w, &gloss, false, 0, 1, emoji::is_emoji(&w));
+                        self.commit_text(pic, &format!("{body}{c}"));
                     } else {
                         // 整句模式：词进句子缓冲；句末标点触发整句翻译收尾
                         sent_push(&w);
@@ -938,7 +1017,7 @@ impl ITfKeyEventSink_Impl for TextService {
                         }
                     }
                 }
-                (Some(w), None) => self.commit_word(pic, &w),
+                (Some((w, gloss)), None) => self.commit_word(pic, &w, &gloss, true),
                 (None, Some(c)) => {
                     if let Some(t) = sent_close("", Some(c)) {
                         self.commit_text(pic, &t);
@@ -1252,44 +1331,134 @@ fn sentence_hint(key: &str) {
     unsafe { cand::set_sentence(hint); }
 }
 
-fn claim(wparam: WPARAM, has_buf: bool, english: bool) -> bool {
-    let ch = wparam.0 as u8 as char;
-    if ch.is_ascii_alphabetic() {
-        return !english;
+/// Windows 字母键只在 VK_A..VK_Z（0x41..0x5A）。不能把虚拟键码截成 u8 再当 ASCII：
+/// 小键盘 1（0x61）和 F5（0x74）会变成 a/t，0x141 截断后也会变成 A。
+fn letter_vk(vk: usize) -> Option<char> {
+    if (0x41..=0x5A).contains(&vk) {
+        Some(vk as u8 as char)
+    } else {
+        None
     }
-    if !has_buf {
+}
+
+/// claim() 的纯输入。修饰键、设置、候选个数都由调用方读好再传进来，测试不用碰 Win32。
+struct KeyClaim {
+    vk: u32,
+    has_buf: bool,
+    english: bool,
+    shift: bool,
+    cnpunct: bool,
+    trmode: i32,
+    sentence_pending: bool,
+    cand_len: usize,
+}
+
+fn should_claim(k: &KeyClaim) -> bool {
+    if letter_vk(k.vk as usize).is_some() {
+        return !k.english;
+    }
+    if !k.has_buf {
         // 整句翻译：缓冲里有没收尾的句子时，句末标点（. / 及 Shift 变体）和
         // 回车拦下来收尾 —— 这样聊天软件里不敲标点直接按回车也能带上整句俄语
-        if crate::settings::trmode() == 2
-            && !SENT.lock().unwrap().is_empty()
-            && matches!(wparam.0 as u32, 0x0D | 0xBE | 0xBF)
-        {
+        if k.trmode == 2 && k.sentence_pending && matches!(k.vk, 0x0D | 0xBE | 0xBF) {
             return true;
         }
         // 中文标点：无拼音时标点键也拦下来转全角（不进组合）。
         // Shift+标点 保持半角放行（方便打代码）；- = ` 没有全角对应，不拦。
-        return !english
-            && crate::settings::cnpunct()
-            && !shift_down()
-            && matches!(wparam.0 as u32, 0xBA | 0xBC | 0xBE..=0xBF | 0xDB..=0xDE);
+        return !k.english
+            && k.cnpunct
+            && !k.shift
+            && matches!(k.vk, 0xBA | 0xBC | 0xBE..=0xBF | 0xDB..=0xDE);
     }
-    match wparam.0 as u32 {
-        0x20 | 0x1B | 0x08 | 0x0D | 0x09 => true, // 空格 / ESC / 退格 / 回车 / Tab
+    match k.vk {
+        0x20 | 0x1B | 0x08 | 0x0D => true, // 空格 / ESC / 退格 / 回车
+        // Tab / ↑ / ↓：当前页真有候选才拦。没有候选时 Tab 要交给应用切焦点。
+        0x09 | 0x26 | 0x28 => k.cand_len > 0,
         // 数字选词：只认当前页里真有的候选，没有就放行给应用（可能只是打字）。
         // Shift+数字 是打 ! @ # $ % 这类符号，不能抢
         0x31..=0x39 => {
-            let idx = (wparam.0 as usize) - 0x31;
-            !shift_down() && idx < UI_CANDS.lock().unwrap().len()
+            let idx = (k.vk as usize) - 0x31;
+            !k.shift && idx < k.cand_len
         }
         // ←/→ 有拼音时拦下来移动拼音光标（v4.14.0：改前面打错的字母），
         // 没拼音放行给应用移动正文光标；Delete / Home / End 同理。
+        // 没有候选也要拦：光标还在拼音里。
         0x25 | 0x27 | 0x2E | 0x24 | 0x23 => true,
-        // ↑/↓ 选词：当前页真有候选才拦，否则放行给应用移动光标。
-        // （v4.5.0 前这里无条件 true，空候选时 ←→ 会被 TSF 吞掉）
-        0x26 | 0x28 => !UI_CANDS.lock().unwrap().is_empty(),
-        0x21 | 0x22 => true,                      // PageUp / PageDown
-        _ => is_punct_vk(wparam.0 as u32),
+        0x21 | 0x22 => true, // PageUp / PageDown
+        v => is_punct_vk(v),
     }
+}
+
+/// 有拼音时，回车/空格/Tab/↑/↓ 在「没有候选」时怎么处理。
+/// None 表示这个键不是这四类，或者 Tab/↑/↓ 有候选、该去移动选择。
+#[derive(Debug, PartialEq, Eq)]
+enum BufConfirm {
+    /// 交给应用（没在组合里，或者没有候选可动的 Tab/方向键）
+    PassToApp,
+    /// 上屏当前行，记自学习
+    CommitCandidate,
+    /// 没有候选：DoneSession 提交原始字母并结束组合，不记自学习
+    CommitRaw,
+}
+
+fn buf_confirm(vk: u32, has_buf: bool, cand_len: usize) -> Option<BufConfirm> {
+    match vk {
+        0x09 | 0x26 | 0x28 => {
+            if !has_buf || cand_len == 0 {
+                Some(BufConfirm::PassToApp)
+            } else {
+                None
+            }
+        }
+        0x0D | 0x20 => {
+            if !has_buf {
+                Some(BufConfirm::PassToApp)
+            } else if cand_len == 0 {
+                Some(BufConfirm::CommitRaw)
+            } else {
+                Some(BufConfirm::CommitCandidate)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// 用这一行已经解析好的释义拼上屏文本，不再按汉字回词典。
+/// 多音字两条候选汉字相同、释义不同，回查会拿到另一个读音。
+/// 空释义回退汉字本身。表情没有词典译文，逐字模式原样保留；
+/// 俄语侧仍然用这一行的标签（候选窗俄语列画的就是它）。
+fn commit_surface(word: &str, gloss: &str, ru_side: bool, sense: usize, trmode: i32, emoji: bool) -> String {
+    if emoji && !ru_side {
+        return word.to_string();
+    }
+    let senses = crate::dict::split_senses(gloss);
+    if ru_side {
+        if senses.is_empty() {
+            word.to_string()
+        } else {
+            senses[sense % senses.len()].to_string()
+        }
+    } else if trmode == 1 {
+        match senses.first() {
+            Some(ru) => format!("{word} {ru}"),
+            None => word.to_string(),
+        }
+    } else {
+        word.to_string()
+    }
+}
+
+fn claim(wparam: WPARAM, has_buf: bool, english: bool) -> bool {
+    should_claim(&KeyClaim {
+        vk: wparam.0 as u32,
+        has_buf,
+        english,
+        shift: shift_down(),
+        cnpunct: crate::settings::cnpunct(),
+        trmode: crate::settings::trmode(),
+        sentence_pending: !SENT.lock().unwrap().is_empty(),
+        cand_len: UI_CANDS.lock().unwrap().len(),
+    })
 }
 
 /// 编辑会话：在 TSF 允许的时机把文本写进文档。
@@ -1443,8 +1612,10 @@ unsafe fn cand_hide() { cand::hide(); }
 /// 把组合里的选中位置挪到拼音光标处：组合范围起点塌缩成竖线，再右移 sel 格。
 /// 文档里的插入竖线跟着走，宿主才知道下一个字母插在哪（v4.14.0 光标编辑）。
 unsafe fn comp_set_caret(ctx: &ITfContext, ec: u32, sel: usize) {
-    let g = COMPOSITION.lock().unwrap();
-    if let Some(comp) = g.as_ref() {
+    // 先把接口拷出来再调 COM。GetRange 可能同步回到 OnCompositionTerminated，
+    // 拿着组合锁进去会把输入线程锁死。
+    let comp = COMPOSITION.lock().unwrap().clone();
+    if let Some(comp) = comp {
         if let Ok(r) = comp.GetRange() {
             let mut care = r.clone();
             let _ = care.Collapse(ec, TF_ANCHOR_START);
@@ -1474,10 +1645,12 @@ impl ITfEditSession_Impl for CompSession {
             self.ctx.GetSelection(ec, 0, &mut sel, &mut n)?;
             if n == 0 { return Ok(()); }
 
-            let have = COMPOSITION.lock().unwrap().is_some();
-            let range = if have {
-                let g = COMPOSITION.lock().unwrap();
-                match g.as_ref().unwrap().GetRange() {
+            // COM 调用可能同步回到 OnCompositionTerminated。只在锁里拷贝引用，
+            // GetRange/SetText/EndComposition 都在锁外执行。
+            let current = COMPOSITION.lock().unwrap().clone();
+            let have = current.is_some();
+            let range = if let Some(comp) = &current {
+                match comp.GetRange() {
                     Ok(r) => r,
                     Err(_) => {
                         dlog!("CompSession: 旧组合 GetRange 失败（组合已死但还没收到 Terminated），本键不更新组合");
@@ -1497,8 +1670,8 @@ impl ITfEditSession_Impl for CompSession {
                 }
             }
             {
-                let g = COMPOSITION.lock().unwrap();
-                if let Some(comp) = g.as_ref() {
+                let current = COMPOSITION.lock().unwrap().clone();
+                if let Some(comp) = current {
                     if let Ok(r) = comp.GetRange() {
                         let hr = r.SetText(ec, 0, &self.text);
                         dlog!("CompSession SetText len={} -> {hr:?}", self.text.len());
@@ -1518,7 +1691,8 @@ impl ITfEditSession_Impl for CompSession {
             if let Ok(view) = self.ctx.GetActiveView() {
                 let mut rc = RECT::default();
                 let mut clipped = BOOL(0);
-                let r2 = COMPOSITION.lock().unwrap().as_ref().and_then(|c| c.GetRange().ok()).unwrap_or(range);
+                let current = COMPOSITION.lock().unwrap().clone();
+                let r2 = current.as_ref().and_then(|c| c.GetRange().ok()).unwrap_or(range);
                 if view.GetTextExt(ec, &r2, &mut rc, &mut clipped).is_ok() {
                     dlog!("候选窗定位: 文本范围 {} ,{}", rc.left, rc.bottom);
                     *PENDING_CAND.lock().unwrap() = Some((rc.left, rc.bottom + 6));
@@ -1558,8 +1732,11 @@ struct DoneSession {
 impl ITfEditSession_Impl for DoneSession {
     fn DoEditSession(&self, ec: u32) -> Result<()> {
         unsafe {
-            // 换字 + 结束组合放在同一次会话里（拆成两次会让某些宿主把文字丢掉）
-            if let Some(comp) = COMPOSITION.lock().unwrap().take() {
+            // 换字 + 结束组合放在同一次会话里（拆成两次会让某些宿主把文字丢掉）。
+            // take() 的锁必须在 GetRange/SetText/EndComposition 之前放开：
+            // EndComposition 会同步回调 OnCompositionTerminated。
+            let current = COMPOSITION.lock().unwrap().take();
+            if let Some(comp) = current {
                 let mut wrote = false;
                 if let Ok(r) = comp.GetRange() {
                     wrote = r.SetText(ec, 0, &self.text).is_ok();
@@ -1596,14 +1773,12 @@ struct UpdateSession {
 impl ITfEditSession_Impl for UpdateSession {
     fn DoEditSession(&self, ec: u32) -> Result<()> {
         unsafe {
-            {
-                let g = COMPOSITION.lock().unwrap();
-                if let Some(comp) = g.as_ref() {
-                    if let Ok(r) = comp.GetRange() {
-                        let _ = r.SetText(ec, 0, &self.text);
-                    }
+            let current = COMPOSITION.lock().unwrap().clone();
+            if let Some(comp) = current {
+                if let Ok(r) = comp.GetRange() {
+                    let _ = r.SetText(ec, 0, &self.text);
                 }
-            } // 先放锁：comp_set_caret 自己会拿 COMPOSITION 锁，持锁调它 = 自死锁
+            }
             comp_set_caret(&self.ctx, ec, self.sel);
         }
         Ok(())
@@ -1622,7 +1797,8 @@ impl ITfEditSession_Impl for CaretSession {
     fn DoEditSession(&self, ec: u32) -> Result<()> {
         unsafe {
             comp_set_caret(&self.ctx, ec, self.sel);
-            if COMPOSITION.lock().unwrap().is_some() {
+            let have = COMPOSITION.lock().unwrap().is_some();
+            if have {
                 if let Ok(view) = self.ctx.GetActiveView() {
                     let mut sel = [TF_SELECTION::default()];
                     let mut n = 0u32;
@@ -1648,10 +1824,11 @@ struct EndSession;
 impl ITfEditSession_Impl for EndSession {
     fn DoEditSession(&self, ec: u32) -> Result<()> {
         unsafe {
-            let mut g = COMPOSITION.lock().unwrap();
-            dlog!("EndSession: 有组合={}", g.is_some());
-            if let Some(comp) = g.take() {
-                // 先清空组合文字再结束：不结束的话文字会留在文档里被宿主当正文提交
+            let current = COMPOSITION.lock().unwrap().take();
+            dlog!("EndSession: 有组合={}", current.is_some());
+            if let Some(comp) = current {
+                // 先清空组合文字再结束：不结束的话文字会留在文档里被宿主当正文提交。
+                // 锁已经放开，EndComposition 同步回调不会自锁。
                 if let Ok(r) = comp.GetRange() {
                     let empty: Vec<u16> = Vec::new();
                     let _ = r.SetText(ec, 0, &empty);
@@ -1662,4 +1839,16 @@ impl ITfEditSession_Impl for EndSession {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod input_tests;
+#[cfg(test)]
+mod stability_tests;
+
+/// 碰到全局组合/候选状态的测试共用一把锁。cargo test 默认并行。
+#[cfg(test)]
+pub(crate) fn lock_state() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
