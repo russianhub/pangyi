@@ -15,6 +15,7 @@
 | `ime/src/emoji.tsv` | 669 | `include_str!`，表情 |
 | `data/zh-ru.tsv` | 261,969 | `build_dict.py` 的写出目标；原型和旧版训练脚本也读它 |
 | `data/raw/manual-zh-ru.tsv` | 2,663 | `build_dict.py` 的人工释义，优先级最高 |
+| `data/gloss-overrides.tsv` | 145（其中 127 条覆盖，其余是注释） | `include_str!`，加载时整条换掉 `dict.tsv` 里对应的 `ru` |
 
 `dict.tsv` 和 `zh-ru.tsv` 表头相同：
 
@@ -39,6 +40,7 @@ simplified  traditional  pinyin_ascii  pinyin_display  pos  freq  ru  initials  
 | Unicode Unihan | 单字主读音；生僻字英文释义再枢轴 | Unicode License v3 | <https://www.unicode.org/charts/unihan.html> |
 | jieba | 词频，用来排序 | MIT | <https://github.com/fxsjy/jieba> |
 | `manual-zh-ru.tsv` | 高频词人工释义 | **未知**。文件头写「由助手人工撰写」；没有单独许可证 | 已在仓库内 |
+| `data/gloss-overrides.tsv` | 已编进输入法的高频词，手写俄语整条替换 | 原创。与仓库其余数据表一起按 CC BY-SA 分发：保留 `NOTICE.md`，相同方式共享。不是从上面任何一部词典摘的 | 已在仓库内 |
 | 中文维基等 XML dump | 语言模型语料 | **未知**。脚本没有写 dump 的许可 | 见下文，文件名也不固定 |
 | kaikki | NOTICE 和 README 写「英文维基中文条目经英俄枢轴」 | NOTICE 把它算在俄语维基词典那一节（CC BY-SA 3.0） | **未知**。`tools/` 里没有 kaikki 的文件名或下载地址 |
 | `emoji.tsv` | 表情候选 | **未知** | 没有生成脚本 |
@@ -145,6 +147,7 @@ cargo run --release --bin gen_abbr -- src/abbr-keys.tsv
 | Rust | 宏 |
 | --- | --- |
 | `ime/src/dict.rs` | `include_str!("dict.tsv")`、`include_str!("abbr-keys.tsv")`、`include_str!("lm.tsv")`、`include_str!("lm_uni.tsv")` |
+| `ime/src/gloss_override.rs` | `include_str!("../../data/gloss-overrides.tsv")` |
 | `ime/src/emoji.rs` | `include_str!("emoji.tsv")` |
 
 `ime/build.rs` **不**嵌这些表。它只在 `ime/payload/pangyi.ico` 存在时，用 windres 把图标和版本信息资源链进 `setup` 这个可执行文件。缺图标时它警告一声然后继续，DLL 照样能编。
@@ -160,11 +163,40 @@ CI（`.github/workflows/ci.yml`）在 `windows-latest` 上编的就是 git 里�
 
 数据表没有单独的「安装时再下载」这一步。用户机器上没有 `dict.tsv`。
 
+## 手写释义覆盖
+
+抽查里「的」「没」这一类错译，可以写进 `data/raw/manual-zh-ru.tsv`，但那份表要重跑整条流水线才进得了 `data/zh-ru.tsv`，而流水线又写不出正在用的 `ime/src/dict.tsv`。所以已经编进输入法的释义，用 `data/gloss-overrides.tsv` 盖，不改 `dict.tsv`，也不改 `lm.tsv`。
+
+`ime/src/gloss_override.rs` 在编译期把这张表嵌进来。候选（`hit_of`）和逐词翻译（`line_ru`）取俄语列时，按「简体 + 读音」整条换掉 `ru`。词头、拼音、词频、来源档、行号都不动，所以：
+
+- 自学习还是按中文词头记在 `learned.txt`
+- 自定义短语还是只读 `phrases.txt`
+- 缩写键不用重跑 `gen_abbr`
+
+匹配顺序：读音列先对 `pinyin_display`，再对 `pinyin_ascii`，最后才用读音留空的那一行（该简体的每个读音）。同一简体、同一读音有两行时，文件里后一行生效。替换的是整条 `ru`，不接到旧释义后面。
+
+列用 TAB 分开，正好 4 列：
+
+```text
+简体	读音	俄语	说明
+```
+
+- 读音写 `dict.tsv` 里的 `pinyin_display`（带声调）。机制允许留空，表示这个简体的每一个读音都用这一条；**现在提交的这张表每一行都要写读音**，避免一条盖住多音字的全部读音。
+- 俄语是换上的整条释义。几个义项用 ` | ` 分开。不要用逗号或分号当义项分隔（候选窗会把它们切开；括号里面的逗号不要紧）。有把握再在元音后加重音 U+0301；只有一个元音的词不必标。
+- 说明用中文，写为什么改。只给人看，不进候选窗。
+- `#` 开头的行和空行是注释。
+- 列数不是 4、简体空、俄语空、说明空、俄语里没有西里尔字母：这一行算坏行。解析会把**每一条**坏行都报出来，整张表不采用，不会悄悄跳过。
+- 简体必须已经在 `dict.tsv` 里。读音不是空的时候，必须对得上该词某一行的 `pinyin_display` 或 `pinyin_ascii`。对不上的，按未知行报出。这张表不能单独造一个词典里没有的词；要给新词加释义，得先在 `dict.tsv` 里有这一行。
+
+加一条的做法：在表里按上面的四列加一行，然后重新编译（`cd ime` 之后 `cargo test`，再 `cargo build --release`）。`cargo test` 会解析这张表，并对照 `dict.tsv` 检查词头和读音。嵌进去的表如果解析失败，或者和词典对不上，输入法在建索引时会直接报错，不会带着错行继续跑。
+
+许可：表里的俄语和中文说明是本仓库的原创，不是从维基词典或其他词典逐条抄来的。它和仓库里其余数据表一起按 CC BY-SA 分发，再分发时保留 [NOTICE.md](../NOTICE.md)，并以相同方式共享。
+
 ## 现在这份产物里，对不上脚本的地方
 
 这些都是对照当前文件和当前脚本得出的，不是猜测「大概是某次手工改的」：
 
-- **`ime/src/dict.tsv` 的生成命令未知。** 见上一节。
+- **`ime/src/dict.tsv` 的生成命令未知。** 见「`dict.tsv` 这一步」。
 - **`nogloss` 行的生成命令未知。**
 - **kaikki 未知。** README、NOTICE 写了；`tools/` 里没有。现有枢轴是 CC-CEDICT 英文 + Wikdict/FreeDict 英俄，不是 kaikki dump。
 - **`lm.tsv` 不是当前两个训练脚本的默认输出。** `train_lm.py` 最多留 20 万条 bigram，`train_lm2.py` 最多留 100 万条。仓库里的 `lm.tsv` 有 1,099,389 行，没有表头。哪一次命令、哪一份 dump 写出了它，**未知**。`lm_uni.tsv` 的 288,415 行落在 `train_lm2.py`「最多 30 万、次数 ≥ 2」的范围里，但这证明不了它就是那个脚本写的，因为 bigram 文件已经对不上。
