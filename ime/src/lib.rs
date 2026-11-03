@@ -357,7 +357,7 @@ impl TextService {
             0
         };
         dlog!(
-            "commit_word word={word} ru_sel={} horizontal={} highlighted={highlighted}",
+            "commit_word word={word} ru_sel={} horizontal={} highlighted={}",
             unsafe { cand::ru_sel() },
             crate::settings::horizontal(),
             highlighted
