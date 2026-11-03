@@ -59,6 +59,7 @@
 - 当前中文词典 **457,138 条记录**；其中有俄语译文的条目显示释义，并非每个中文词都已有俄语译文。
 - 数据来自 CC-CEDICT、俄语维基词典（含 kaikki 英文维基枢轴）、Wikdict、FreeDict、UniHan、jieba 等免费来源，未使用付费翻译 API。
 - 词典释义适合辅助查词与学习；多义词需结合语境判断。
+- 数据文件怎样生成，见 [数据流水线](docs/data-pipeline.md)。常用词俄语释义的覆盖率和抽查，见 [释义抽查](docs/gloss-audit.md)。
 - 数据署名与分发要求见 [NOTICE.md](NOTICE.md)。
 
 灵感来自 [青简 Qingjian](https://qingjian.app)，旁译专注中文 → 俄语。
@@ -109,4 +110,4 @@ Cargo 注册表和 `ime/target` 走 Actions 缓存；llvm-mingw 另有一份缓�
 ## 许可
 
 - 代码：MIT（见 [LICENSE](LICENSE)）
-- 数据：CC BY-SA 系列 —— 分发时必须保留 [NOTICE.md](NOTICE.md) 并以相同方式共享
+- 数据：CC BY-SA 系列 —— 分发时必须保留 [NOTICE.md](NOTICE.md) 并以相同方式共享。生成步骤见 [数据流水线](docs/data-pipeline.md)，常用词释义抽查见 [释义抽查](docs/gloss-audit.md)
