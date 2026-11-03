@@ -1,0 +1,71 @@
+# 推送到 main、以及指向 main 的 PR：在 windows-latest 上测试并构建 64/32 位 DLL 和安装包。
+# 词库 tsv 在 Git 里（不是 LFS），checkout 用默认完整检出。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  # Swatinem/rust-cache 需要写 Actions cache。
+  actions: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  windows:
+    name: windows
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+        with:
+          # 默认就是完整检出当前提交（含 dict.tsv / lm.tsv），不要改成 sparse / partial。
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: 确认词库已随检出下载
+        run: |
+          $dict = Get-Item ime/src/dict.tsv
+          $lm = Get-Item ime/src/lm.tsv
+          $head = Get-Content -Path ime/src/dict.tsv -TotalCount 1
+          if ($dict.Length -lt 30MB) { throw "dict.tsv is $($dict.Length) bytes" }
+          if ($lm.Length -lt 10MB) { throw "lm.tsv is $($lm.Length) bytes" }
+          if ($head -like "version https://git-lfs*") { throw "dict.tsv is a Git LFS pointer" }
+          Write-Host "dict.tsv $($dict.Length); lm.tsv $($lm.Length)"
+
+      - name: 安装 Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: i686-pc-windows-gnu
+          rust-src-dir: ime
+          cache: true
+          cache-shared-key: pangyi-windows
+          # 这个仓库没有把警告清干净。空字符串表示不要套用 action 默认的 -D warnings。
+          rustflags: ""
+
+      - name: 清掉 RUSTFLAGS
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUSTFLAGS="
+
+      - name: 缓存 llvm-mingw
+        uses: actions/cache@v4
+        with:
+          path: tools/llvm-mingw
+          key: llvm-mingw-20261020-msvcrt-x86_64
+
+      - name: 准备 llvm-mingw 20261020（msvcrt）
+        run: ./.github/scripts/setup-llvm-mingw.ps1
+
+      - name: 测试并构建 DLL 与安装包
+        run: ./.github/scripts/build-windows.ps1

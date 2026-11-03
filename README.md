@@ -76,12 +76,35 @@ Windows + Rust（[rustup](https://rustup.rs)）：
 ```powershell
 cd ime
 cargo build --release                    # 64 位 pangyi_ime.dll（cdylib）
-# 32 位 DLL：需要 tools/llvm-mingw 工具链 + build/x86-stub.o（见 build.rs）
-# 安装包 exe：把两个 DLL 放进 ime/payload/ 后
-cargo build --release --bin setup        # 输出 pangyi-setup.exe
+# 32 位 DLL：需要 tools/llvm-mingw，并把 build/x86-stub.c 编成 build/x86-stub.o
+# 再链进 i686-pc-windows-gnu（做法与 CI 相同，见下一节）
+# 安装包 exe：把两个 DLL 和 pangyi.ico 放进 ime/payload/ 后
+cargo build --release --bin setup        # ime/target/release/setup.exe
 ```
 
-词库 `ime/src/dict.tsv` 以 `include_str!` 直接编进二进制，没有任何运行时数据文件依赖。
+词库 `ime/src/dict.tsv` 以 `include_str!` 直接编进二进制，没有任何运行时数据文件依赖。`ime/payload/`（DLL 和图标）在 `.gitignore` 里，需要在打安装包之前自己放进去。图标可以用 `python tools/make_ico.py ime/build/icon ime/payload/pangyi.ico` 从 `ime/build/icon/icon-*.png` 生成。
+
+## 持续集成与发布
+
+[![持续集成](https://github.com/russianhub/pangyi/actions/workflows/ci.yml/badge.svg)](https://github.com/russianhub/pangyi/actions/workflows/ci.yml)
+
+`.github/workflows/ci.yml` 在推送到 `main`，以及指向 `main` 的拉取请求上运行，使用 `windows-latest`。
+
+- 64 位：`cargo build --release --lib`。运行器默认是 MSVC 工具链，和本机 rustup 默认宿主上的 `cargo build --release` 一致，产物是 `pangyi_ime.dll`。
+- 32 位：下载 [llvm-mingw 20261020](https://github.com/mstorsjo/llvm-mingw/releases/tag/20261020) 的 msvcrt、x86_64 压缩包，核对 SHA256 后解到 `tools/llvm-mingw`（该目录已 gitignore）。用其中的 `i686-w64-mingw32-gcc` 把 `ime/build/x86-stub.c` 编成 `x86-stub.o`，再以 `i686-pc-windows-gnu`、`-C link-self-contained=no`、`+crt-static` 链出 32 位 DLL。
+- `cargo test --locked`（`ime` 这个包，含各个 bin 的编译）。`dict.tsv`、`lm.tsv` 直接在 Git 里，不是 Git LFS；checkout 用默认设置即可。
+- 用 `tools/make_ico.py` 从 `ime/build/icon/icon-*.png` 生成 `pangyi.ico`，把两个 DLL 放进 `ime/payload/`，再 `cargo build --release --bin setup`，确认安装包能编过。这一步只在 CI 里验证，不上传文件。
+
+32 位链接在工具链目录里补两样东西，不改仓库里的源文件，也不提交生成的对象：
+
+- `x86-stub.o` 提供 `__register_frame_info` 这一组空实现。`i686-pc-windows-gnu` 的 `rsbegin.o` / `rsend.o` 会引用它们，llvm-mingw 的 libunwind 没有这些符号。
+- rustc 还会传 `-lgcc`、`-lgcc_eh`。llvm-mingw 没有这两个文件名，脚本把一个占位对象做成 `libgcc.a`，并把静态 `libunwind.a` 复制为 `libgcc_eh.a`。帧注册符号仍然来自 stub。`+crt-static` 用来把 unwind 静态链进去，安装包不依赖 `libunwind.dll`。
+
+只编 DLL、旁边还没有 `ime/payload/pangyi.ico` 时，`build.rs` 会警告「payload/pangyi.ico 不存在，跳过资源编译」然后继续。这是预期行为。图标和 DLL 都不要提交。
+
+Cargo 注册表和 `ime/target` 走 Actions 缓存；llvm-mingw 另有一份缓存。
+
+`.github/workflows/release.yml` 在推送 `v*` 标签（例如 `v4.17.0`）时跑同一套构建，把安装包命名为 `pangyi-<标签>.exe`，并写一个 `sha256sum -c` 能用的 `.sha256` 文件。然后用 `gh release create --draft` 把这两个文件上传到该标签的草稿 Release。草稿要人在 GitHub 上核对校验值后再公开。这个标签如果已经有 Release（含草稿），工作流会失败并留下原来的附件。用的是 Actions 自带的 `GITHUB_TOKEN`，不用另配 secret。权限是 `contents: write`（创建 Release）和 `actions: write`（写缓存）。
 
 ## 许可
 

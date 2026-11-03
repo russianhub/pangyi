@@ -1,0 +1,77 @@
+# 推送 v* 标签时构建安装包，计算 SHA256，上传到草稿 Release。
+# 不公开发布。标签已有 Release（含草稿）时失败，不覆盖已有附件。
+# 只用 Actions 自带的 GITHUB_TOKEN，不需要仓库 secret。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  # 与 CI 共用 cargo / llvm-mingw 缓存。
+  actions: write
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  draft:
+    name: draft installer
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: 这个标签还没有 Release 才继续
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./.github/scripts/publish-draft.ps1 -CheckOnly
+
+      - name: 确认词库已随检出下载
+        run: |
+          $dict = Get-Item ime/src/dict.tsv
+          $lm = Get-Item ime/src/lm.tsv
+          $head = Get-Content -Path ime/src/dict.tsv -TotalCount 1
+          if ($dict.Length -lt 30MB) { throw "dict.tsv is $($dict.Length) bytes" }
+          if ($lm.Length -lt 10MB) { throw "lm.tsv is $($lm.Length) bytes" }
+          if ($head -like "version https://git-lfs*") { throw "dict.tsv is a Git LFS pointer" }
+          Write-Host "dict.tsv $($dict.Length); lm.tsv $($lm.Length)"
+
+      - name: 安装 Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: i686-pc-windows-gnu
+          rust-src-dir: ime
+          cache: true
+          cache-shared-key: pangyi-windows
+          rustflags: ""
+
+      - name: 清掉 RUSTFLAGS
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUSTFLAGS="
+
+      - name: 缓存 llvm-mingw
+        uses: actions/cache@v4
+        with:
+          path: tools/llvm-mingw
+          key: llvm-mingw-20261020-msvcrt-x86_64
+
+      - name: 准备 llvm-mingw 20261020（msvcrt）
+        run: ./.github/scripts/setup-llvm-mingw.ps1
+
+      - name: 测试并构建 DLL 与安装包
+        run: ./.github/scripts/build-windows.ps1
+
+      - name: 上传草稿 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./.github/scripts/publish-draft.ps1
