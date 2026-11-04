@@ -1,4 +1,5 @@
 # 把安装包和 SHA256 上传到标签对应的草稿 Release。
+# 说明正文就是 docs/releases/<标签>.md，不另写一套短说明。
 # 标签已有 Release（含草稿）时失败，避免覆盖已有附件。
 param([switch]$CheckOnly)
 
@@ -11,6 +12,12 @@ if ($env:GITHUB_REF_TYPE -and $env:GITHUB_REF_TYPE -ne "tag") {
     throw "release workflow only runs for tags (GITHUB_REF_TYPE=$env:GITHUB_REF_TYPE)"
 }
 if (-not $env:GH_TOKEN) { throw "GH_TOKEN is empty" }
+
+$Repo = if ($env:GITHUB_WORKSPACE) { $env:GITHUB_WORKSPACE } else { Get-Location }
+$notesFile = Join-Path $Repo "docs\releases\$Tag.md"
+if (-not (Test-Path -LiteralPath $notesFile)) {
+    throw "release notes missing: docs/releases/$Tag.md"
+}
 
 function Assert-ReleaseAbsent {
     param([string]$Name)
@@ -31,7 +38,6 @@ function Assert-ReleaseAbsent {
 Assert-ReleaseAbsent $Tag
 if ($CheckOnly) { return }
 
-$Repo = if ($env:GITHUB_WORKSPACE) { $env:GITHUB_WORKSPACE } else { Get-Location }
 Set-Location $Repo
 $built = Join-Path $Repo "ime\target\release\setup.exe"
 if (-not (Test-Path $built)) { throw "installer missing: $built" }
@@ -47,30 +53,16 @@ $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
 $utf8 = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($sum, "$hash  $exeName`n", $utf8)
 
-$notes = @"
-这是 CI 打好的草稿安装包，还没有公开。
-
-- 文件：$exeName
-- SHA256：$hash
-- 安装包未签名。请先核对附件里的 $sumName，再决定要不要公开发布。
-
-PowerShell:
-
-    Get-FileHash .\$exeName -Algorithm SHA256
-
-同一目录下也可以执行: sha256sum -c $sumName
-"@
-$notesPath = Join-Path $dist "release-notes.md"
-[System.IO.File]::WriteAllText($notesPath, $notes.Replace("`r`n", "`n"), $utf8)
-
 # 创建前再查一次，缩短「检查之后、创建之前」被人抢先发布的窗口。
+# --draft：保持草稿，不公开发布。正文用 docs/releases/<标签>.md 原文。
+Write-Host "release body: docs/releases/$Tag.md"
 Assert-ReleaseAbsent $Tag
 & gh release create $Tag `
     --repo $env:GITHUB_REPOSITORY `
     --draft `
     --verify-tag `
     --title "旁译 $Tag" `
-    --notes-file $notesPath `
+    --notes-file $notesFile `
     $exe `
     $sum
 
