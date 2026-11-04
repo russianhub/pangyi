@@ -91,6 +91,9 @@ function Invoke-CheckOnly {
         if ($ExpectSuccess -and $output -match "draft release created") {
             throw "$Label`: CheckOnly must not create a release"
         }
+        # 预期失败的子进程会留下非 0。这个脚本自己是被 Actions 用
+        # pwsh -Command 点源的，不把这个码清掉，步骤会被判失败。
+        $global:LASTEXITCODE = 0
     } finally {
         $env:PATH = $savedPath
         foreach ($k in $keys) {
@@ -115,3 +118,5 @@ Invoke-CheckOnly -Label "exists" -Workspace $withNotes -FakeDir $fake -FakeMode 
 Invoke-CheckOnly -Label "missing-notes" -Workspace $noNotes -FakeDir $fake -FakeMode "absent" -ExpectSuccess $false -ExpectPattern "release notes missing"
 
 Write-Host "publish-draft -CheckOnly cases passed"
+$global:LASTEXITCODE = 0
+exit 0
