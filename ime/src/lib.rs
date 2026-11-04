@@ -435,7 +435,7 @@ impl TextService {
         // 状态轮询（Caps 对账 + Shift 单击切中/英）挂在宿主 UI 线程上
         crate::status::ensure_poller();
         crate::status::set_active(true);
-        log("Activate v4.16.0");
+        log("Activate v4.17.0");
         log(&format!(
             "cnpunct={} english={} trmode={} accent={} emoji={}",
             crate::settings::cnpunct(),

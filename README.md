@@ -2,11 +2,11 @@
 
 ### 敲拼音，看俄语。把查词融入每一次输入。
 
-![旁译 v4.16.0：中文输入、俄语释义、本机运行；画面为功能示意](docs/hero-v4.16.0.jpg)
+![旁译 v4.17.0：中文输入、俄语释义、本机运行；画面为功能示意](docs/hero-v4.17.0.jpg)
 
 **面向俄语学习者的 Windows 系统输入法。** 输入熟悉的中文拼音，在候选窗里查看对应的俄语释义；有重音的数据会显示重音。写作、聊天、记单词，都从一次输入开始。
 
-**[↓ 下载 v4.16.0 Windows 安装包](https://github.com/russianhub/pangyi/releases/download/v4.16.0/pangyi-v4.16.0.exe)** · [更新说明](docs/releases/v4.16.0.md) · [反馈问题](https://github.com/russianhub/pangyi/issues)
+**[↓ 下载 v4.17.0 Windows 安装包](https://github.com/russianhub/pangyi/releases/download/v4.17.0/pangyi-v4.17.0.exe)** · [更新说明](docs/releases/v4.17.0.md) · [反馈问题](https://github.com/russianhub/pangyi/issues)
 
 免费开源 · 本机运行 · 无广告 · 无需联网查词
 
@@ -20,19 +20,19 @@
 
 旁译接入 Windows 输入法系统（TSF），安装后按 `Win + 空格` 切换使用，无需每次启动独立查词程序。可在记事本、Word、浏览器、聊天软件等支持系统输入法的应用中使用；具体兼容情况欢迎反馈。
 
-## v4.16.0：表达更多，输入更顺
+## v4.17.0：输入更干净，常用词俄语更正
 
-- **表情与颜文字扩容：170 → 648 条映射**，覆盖 435 个不同关键词。`zqsg` → 🥹、`dbq` → 🥺、`xdm` → 🤝、`yyds` → 👑 / 🐮；完整匹配关键词时，表情候选排在前面。
-- **英文、表情开关及时生效**：设置面板修改后，运行中的应用通常约 0.5 秒内更新，无需重开应用。
-- **切走窗口更干净**：切换应用或关闭输入窗口时，候选窗自动收起，减少候选栏残留。
-- **鼠标划过面板更稳定**：修复设置面板悬停闪屏，并改进候选窗重绘。
-- **英文切换更可靠**：修复面板英文开关未正确生效的问题，改进 Shift 切换与 Caps Lock 大写输入，并增加状态提示。
+- **字母、确认和点选更听话**：只有主键盘 A–Z 进拼音；小键盘和功能键交给应用。没有候选时，Tab 和上下方向键交给应用，回车和空格上屏原文，且不写入自学习。点选只落在画出的词和释义上。
+- **候选窗跟着副屏走**：按光标所在显示器的工作区摆放，不再被夹回主屏，也不钻进任务栏。
+- **多音字上屏用当前这一行**：不再按汉字去词典里另找一个读音。
+- **127 条手写俄语覆盖**：按「简体 + 读音」整条换掉高频错译，例如「的」「没」「事业」「承诺」，以及「长」的两个读音。`dict.tsv` 没有改。
+- **抽查和发布流程写进文档**：前 5,000 常用词的释义抽查、数据怎样编进输入法，以及推送 `v*` 标签后生成草稿安装包。
 
-[查看完整更新、重启说明与回归结果 →](docs/releases/v4.16.0.md)
+[查看完整更新、重启说明与尚未在 Windows 上手工验证的部分 →](docs/releases/v4.17.0.md)
 
 ## 三步开始
 
-1. 下载并运行上方 `pangyi-v4.16.0.exe` 安装包。该版本未签名；若出现 SmartScreen 提示，先确认下载来源与 [Release 中的 SHA256](https://github.com/russianhub/pangyi/releases/tag/v4.16.0)，再决定是否继续运行。
+1. 下载并运行上方 `pangyi-v4.17.0.exe` 安装包。该版本未签名；若出现 SmartScreen 提示，先确认下载来源与 [Release 中的 SHA256](https://github.com/russianhub/pangyi/releases/tag/v4.17.0)，再决定是否继续运行。
 2. 首次安装后，按安装提示注销并重新登录（也可重启电脑）；升级后，保存工作并完全退出、重新打开使用旁译的应用，让它加载新版输入法。
 3. 按 `Win + 空格` 选择「旁译」，输入 `pengyou` 或 `kaifa` 开始使用。双击桌面「旁译」打开设置。
 
@@ -105,7 +105,7 @@ cargo build --release --bin setup        # ime/target/release/setup.exe
 
 Cargo 注册表和 `ime/target` 走 Actions 缓存；llvm-mingw 另有一份缓存。
 
-`.github/workflows/release.yml` 在推送 `v*` 标签（例如 `v4.17.0`）时跑同一套构建，把安装包命名为 `pangyi-<标签>.exe`，并写一个 `sha256sum -c` 能用的 `.sha256` 文件。然后用 `gh release create --draft` 把这两个文件上传到该标签的草稿 Release。草稿要人在 GitHub 上核对校验值后再公开。这个标签如果已经有 Release（含草稿），工作流会失败并留下原来的附件。用的是 Actions 自带的 `GITHUB_TOKEN`，不用另配 secret。权限是 `contents: write`（创建 Release）和 `actions: write`（写缓存）。
+`.github/workflows/release.yml` 在推送 `v*` 标签（例如 `v4.17.0`）时跑同一套构建，把安装包命名为 `pangyi-<标签>.exe`，并写一个 `sha256sum -c` 能用的 `.sha256` 文件。然后用 `gh release create --draft` 把这两个文件上传到该标签的草稿 Release。说明正文用 `docs/releases/<标签>.md`（`v4.17.0` 就是 `docs/releases/v4.17.0.md`）；没有这个文件，工作流失败，不创建 Release。草稿要人在 GitHub 上核对校验值后再公开。这个标签如果已经有 Release（含草稿），工作流会失败并留下原来的附件。用的是 Actions 自带的 `GITHUB_TOKEN`，不用另配 secret。权限是 `contents: write`（创建 Release）和 `actions: write`（写缓存）。版本号不写在工作流里：安装包里的版本来自 `ime/Cargo.toml`。
 
 ## 许可
 
