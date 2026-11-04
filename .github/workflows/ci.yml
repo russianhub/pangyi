@@ -34,6 +34,9 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: 发布脚本的 CheckOnly（不创建 Release）
+        run: ./.github/scripts/test-publish-draft.ps1
+
       - name: 确认词库已随检出下载
         run: |
           $dict = Get-Item ime/src/dict.tsv

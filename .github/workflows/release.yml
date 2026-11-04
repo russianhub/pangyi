@@ -32,6 +32,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      # CI 的 test-publish-draft.ps1 用假 gh 跑同一条 -CheckOnly，不创建 Release。
       - name: 这个标签还没有 Release 才继续
         env:
           GH_TOKEN: ${{ github.token }}
