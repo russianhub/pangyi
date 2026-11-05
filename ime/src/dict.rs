@@ -32,9 +32,13 @@ pub struct Hit {
     /// 来源置信度分层（排序降权用）：
     /// 0 = 直连语料 / 人工表；1 = 机器枢轴扩展；2 = 只有英文释义
     pub tier: u8,
-    /// 这条是不是「当前输入的精确读音」里的内置词。
-    /// 短语、整句、前缀和缩写都是 false。用户词插入时靠它找到内置第一名。
+    /// 这条是不是「当前输入的精确读音」。
+    /// 短语、整句、前缀和缩写是 false。内置精确词，以及后来插入的用户词、表情包，是 true。
     pub exact: bool,
+    /// 0 = 内置词或短语，不是后插进去的。
+    /// 1 = 权重 ≥ 100，2 = 默认权重，3 = 负数权重。
+    /// 表情包靠它认出真正的内置精确第一名，不会把已经插好的用户词当成第一名。
+    pub rank_band: u8,
 }
 
 /// 扁平行表：(key, 词条行)，按 key 升序排好，同一个 key 的多行相邻。
@@ -499,6 +503,7 @@ fn hit_of(line: &'static str) -> Option<Hit> {
         freq,
         tier,
         exact: false,
+        rank_band: 0,
     })
 }
 
@@ -597,8 +602,9 @@ fn blended_rank(freq: u64, word: &str, tier: u8) -> f64 {
 /// 1~2 字母前缀走预热的按词频排的表。之前只留 max_cands*3 条，
 /// 用户看到的就永远是那八九个，翻不动。
 pub fn lookup(ascii: &str) -> Vec<Hit> {
-    // 整次查找钉住同一份用户词库，避免读到一半被重载。
+    // 整次查找钉住同一份用户词库和表情包，避免读到一半被重载。
     let _user_snap = crate::user_dict::activate_snap();
+    let _pack_snap = crate::packs::activate_snap();
     if ascii.is_empty() {
         return Vec::new();
     }
@@ -773,6 +779,7 @@ pub fn lookup(ascii: &str) -> Vec<Hit> {
                     freq: 0,
                     tier: 0,
                     exact: false,
+                    rank_band: 0,
                 });
                 head += 1;
             }
@@ -794,7 +801,9 @@ pub fn lookup(ascii: &str) -> Vec<Hit> {
     }
     // 用户词：默认紧跟内置精确第一名；权重 ≥ 100 才能排到它前面。
     // 短语和整句占着 head，不会被用户词挤掉。
+    // 表情包用同一套档位，插在用户词后面（同一档里用户词更靠前）。
     crate::user_dict::merge_hits(&mut out, head, ascii);
+    crate::packs::merge_hits(&mut out, head, ascii);
     out.truncate(MAX_HITS);
     out
 }
@@ -899,6 +908,7 @@ pub fn phrase(trigger: &str) -> Option<Hit> {
             freq: u64::MAX,
             tier: 0,
             exact: false,
+            rank_band: 0,
         })
 }
 

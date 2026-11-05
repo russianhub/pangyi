@@ -9,6 +9,7 @@ pub mod cand;
 pub mod dict;
 pub mod emoji;
 mod gloss_override;
+mod packs;
 mod user_dict;
 pub mod settings;
 pub mod status;
@@ -210,8 +211,19 @@ fn set_all_cands(hits: Vec<dict::Hit>, key: &str) {
             }
         }
         // 直接把 lookup 的结果移进来（原来是逐条 clone），
-        // 候选池放大到几百条之后这一步不能再白拷一份
-        g.extend(hits.into_iter().map(|h| (h.word, h.ru)));
+        // 候选池放大到几百条之后这一步不能再白拷一份。
+        // 表情模式已经把内置表情放在最前。包里如果有同一条，不再排第二次。
+        let front = g.len();
+        if front == 0 {
+            g.extend(hits.into_iter().map(|h| (h.word, h.ru)));
+        } else {
+            for h in hits {
+                if g[..front].iter().any(|(w, _)| w == &h.word) {
+                    continue;
+                }
+                g.push((h.word, h.ru));
+            }
+        }
     }
     PAGE.store(0, std::sync::atomic::Ordering::Relaxed);
     refresh_page();
@@ -347,7 +359,7 @@ impl TextService {
     /// highlighted：这一行就是当前高亮行时，俄语侧沿用已经循环到的义项。
     fn commit_word(&self, pic: Option<&ITfContext>, word: &str, gloss: &str, highlighted: bool) {
         // 表情不进自学习：记进 learned.txt 会变成「关掉表情模式还蹦出来」的怪候选
-        if !emoji::is_emoji(word) {
+        if !skip_learn(word) {
             dict::note_choice(word); // 自学习：下次把这个词排前面
         }
         // v4.5.0 选中俄语侧：只上屏俄语，中文不输入（逐字翻译不再重复拼）
@@ -449,6 +461,8 @@ impl TextService {
         // 用户词库：没有文件就生成带注释的模板，然后读入。放在预热前面，
         // 后台第一次查词就能看见用户词。
         crate::user_dict::load_at_startup();
+        // 表情包：目录里有 tsv 才读。不创建模板，也不联网。
+        crate::packs::load_at_startup();
         // 后台预热词典索引，避免第一次打字时卡一下（只跑一次）
         static WARMED: std::sync::Once = std::sync::Once::new();
         WARMED.call_once(|| {
@@ -766,7 +780,7 @@ impl ITfKeyEventSink_Impl for TextService {
                 let letter = letter.unwrap().to_ascii_uppercase();
                 match row {
                     Some((w, gloss)) => {
-                        if !emoji::is_emoji(&w) {
+                        if !skip_learn(&w) {
                             dict::note_choice(&w);
                         }
                         sent_push(&w);
@@ -788,6 +802,7 @@ impl ITfKeyEventSink_Impl for TextService {
             let starting = self.buf.borrow().is_empty();
             if starting {
                 crate::user_dict::on_composition_start();
+                crate::packs::on_composition_start();
             }
             {
                 let mut b = self.buf.borrow_mut();
@@ -1007,7 +1022,7 @@ impl ITfKeyEventSink_Impl for TextService {
             unsafe { cand_hide(); }
             match (row, c) {
                 (Some((w, gloss)), Some(c)) => {
-                    if !emoji::is_emoji(&w) {
+                    if !skip_learn(&w) {
                         dict::note_choice(&w);
                     }
                     // v4.5.0：选中俄语侧时只上屏俄语+标点，中文词照旧进句子缓冲
@@ -1432,6 +1447,12 @@ fn buf_confirm(vk: u32, has_buf: bool, cand_len: usize) -> Option<BufConfirm> {
         }
         _ => None,
     }
+}
+
+/// 内置表情，以及表情包里的符号、颜文字，不写入自学习。
+/// 纯汉字的包候选仍会记，和用户词一样。
+fn skip_learn(word: &str) -> bool {
+    emoji::is_emoji(word) || packs::blocks_learning(word)
 }
 
 /// 用这一行已经解析好的释义拼上屏文本，不再按汉字回词典。

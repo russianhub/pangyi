@@ -37,6 +37,9 @@ jobs:
       - name: 发布脚本的 CheckOnly（不创建 Release）
         run: ./.github/scripts/test-publish-draft.ps1
 
+      - name: 表情包脚本（不联网）
+        run: ./.github/scripts/test-pangyi-packs.ps1
+
       - name: 确认词库已随检出下载
         run: |
           $dict = Get-Item ime/src/dict.tsv
