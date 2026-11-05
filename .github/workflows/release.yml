@@ -1,7 +1,7 @@
 # 推送 v* 标签时构建安装包，计算 SHA256，上传到草稿 Release。
 # 版本号不写在这个文件里：二进制里的版本来自 ime/Cargo.toml 的
-# CARGO_PKG_VERSION，安装包文件名来自标签（v4.17.0 → pangyi-v4.17.0.exe）。
-# 说明正文用 docs/releases/<标签>.md，例如 v4.17.0 → docs/releases/v4.17.0.md。
+# CARGO_PKG_VERSION，安装包文件名来自标签（v4.18.0 → pangyi-v4.18.0.exe）。
+# 说明正文用 docs/releases/<标签>.md，例如 v4.18.0 → docs/releases/v4.18.0.md。
 # 不公开发布。标签已有 Release（含草稿）时失败，不覆盖已有附件。
 # 只用 Actions 自带的 GITHUB_TOKEN，不需要仓库 secret。
 name: Release
