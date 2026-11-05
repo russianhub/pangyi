@@ -1,6 +1,7 @@
 //! 手写俄语释义覆盖。
 //!
 //! `data/gloss-overrides.tsv` 在编译期嵌进来，查词和逐词翻译取 `ru` 时整条替换。
+//! 用户自己的 `user-gloss.tsv` / `user-dict.tsv` 还在这张表之后（见 user_dict）。
 //! 不改词头、拼音、词频、来源档，因此：
 //! - 自学习仍按中文词头记在 learned.txt
 //! - 自定义短语仍只读 phrases.txt
@@ -453,7 +454,7 @@ mod tests {
             "{shicong}"
         );
         assert_eq!(
-            crate::dict::ru_of("我"),
+            crate::dict::ru_of("我").as_deref(),
             Some("я"),
             "没写进覆盖表的词保持原释义"
         );

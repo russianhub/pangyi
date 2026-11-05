@@ -64,6 +64,15 @@
 
 灵感来自 [青简 Qingjian](https://qingjian.app)，旁译专注中文 → 俄语。
 
+## 自己的词和俄语
+
+安装包里的词库不能直接改。要加自己的词，或者换掉某个词的俄语，在本机这两个文本文件里写，不用联网，也不用账号：
+
+- `%LOCALAPPDATA%\Pangyi\user-dict.tsv` — 添加词（词头、拼音、可选俄语、可选权重）
+- `%LOCALAPPDATA%\Pangyi\user-gloss.tsv` — 改已有词的俄语
+
+这两个文件和自定义短语、自学习记在同一个文件夹。第一次切到旁译时，如果文件还不存在，会生成带说明的模板。它们只留在你的电脑上，不会上传，也不属于下面 CC BY-SA 词典数据。格式、权重怎么排、以及怎么打开文件夹，见 [用户词库](docs/user-dictionary.md)。
+
 ## 反馈与卸载
 
 欢迎在 [Issues](https://github.com/russianhub/pangyi/issues) 用中文反馈。请附 Windows 版本、旁译版本、应用名称、复现步骤；截图前请遮住私人信息。
@@ -111,3 +120,4 @@ Cargo 注册表和 `ime/target` 走 Actions 缓存；llvm-mingw 另有一份缓�
 
 - 代码：MIT（见 [LICENSE](LICENSE)）
 - 数据：CC BY-SA 系列 —— 分发时必须保留 [NOTICE.md](NOTICE.md) 并以相同方式共享。生成步骤见 [数据流水线](docs/data-pipeline.md)，常用词释义抽查见 [释义抽查](docs/gloss-audit.md)。手写覆盖表 `data/gloss-overrides.tsv` 是原创，同样按 CC BY-SA 随数据分发
+- 用户自己写的 `user-dict.tsv` / `user-gloss.tsv` 只在用户电脑上，不随安装包分发，也不纳入上面的 CC BY-SA 数据

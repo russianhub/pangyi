@@ -9,6 +9,7 @@ pub mod cand;
 pub mod dict;
 pub mod emoji;
 mod gloss_override;
+mod user_dict;
 pub mod settings;
 pub mod status;
 
@@ -445,6 +446,9 @@ impl TextService {
             crate::settings::emoji()
         ));
 
+        // 用户词库：没有文件就生成带注释的模板，然后读入。放在预热前面，
+        // 后台第一次查词就能看见用户词。
+        crate::user_dict::load_at_startup();
         // 后台预热词典索引，避免第一次打字时卡一下（只跑一次）
         static WARMED: std::sync::Once = std::sync::Once::new();
         WARMED.call_once(|| {
@@ -779,6 +783,12 @@ impl ITfKeyEventSink_Impl for TextService {
         // 字母：进组合（v4.14.0 插在光标处 —— ←/→ 移过光标后，字母从那里接着打）
         if let Some(ch) = letter {
             if crate::settings::english() { return Ok(BOOL(0)); }
+            // 缓冲从空到第一个字母 = 一次新的拼音。这时看用户词库改过没有，
+            // 大约一秒最多看一次文件时间，按键路径上不每次都读盘。
+            let starting = self.buf.borrow().is_empty();
+            if starting {
+                crate::user_dict::on_composition_start();
+            }
             {
                 let mut b = self.buf.borrow_mut();
                 let c = self.cursor.get().min(b.len());

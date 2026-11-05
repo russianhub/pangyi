@@ -2,12 +2,14 @@
 //!
 //! 索引：精确（HashMap）+ 前缀（排序数组二分）+ 首字母缩写（zg → 中国）。
 //! 另外会记住你选过的词（%LOCALAPPDATA%\Pangyi\learned.txt），下次把它排到前面。
+//! 用户词和用户俄语在这之上再生效（见 user_dict），不改 dict.tsv。
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 static RAW: &str = include_str!("dict.tsv");
-// 俄语列可被 data/gloss-overrides.tsv 整条换掉（见 gloss_override）。
-// 只换 ru：词头、拼音、词频、行号不动，缩写键、自学习和自定义短语不用跟着改。
+// 俄语列可被 data/gloss-overrides.tsv 整条换掉（见 gloss_override），
+// 然后再被用户的 user-gloss.tsv / user-dict.tsv 盖住（见 user_dict）。
+// 内置覆盖只换 ru：词头、拼音、词频、行号不动。
 
 /// 编译期生成的缩写键表（gen_abbr 产出）：每行「键 TAB 行号」，
 /// 行号 = dict.tsv 里该词的行号（1 起，表头不计）。
@@ -30,6 +32,9 @@ pub struct Hit {
     /// 来源置信度分层（排序降权用）：
     /// 0 = 直连语料 / 人工表；1 = 机器枢轴扩展；2 = 只有英文释义
     pub tier: u8,
+    /// 这条是不是「当前输入的精确读音」里的内置词。
+    /// 短语、整句、前缀和缩写都是 false。用户词插入时靠它找到内置第一名。
+    pub exact: bool,
 }
 
 /// 扁平行表：(key, 词条行)，按 key 升序排好，同一个 key 的多行相邻。
@@ -476,6 +481,7 @@ fn hit_of(line: &'static str) -> Option<Hit> {
     let freq: u64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let ru = it.next().unwrap_or("");
     let ru = crate::gloss_override::ru_for(word, py, disp, ru);
+    let ru = crate::user_dict::overlay_ru(word, py, disp, ru);
     let _ini = it.next();
     let src = it.next().unwrap_or("");
     let tier = match src {
@@ -486,7 +492,14 @@ fn hit_of(line: &'static str) -> Option<Hit> {
         "english" => 2,
         _ => 0,
     };
-    Some(Hit { word: word.into(), pinyin: disp.into(), ru: ru.into(), freq, tier })
+    Some(Hit {
+        word: word.into(),
+        pinyin: disp.into(),
+        ru: ru.into_owned(),
+        freq,
+        tier,
+        exact: false,
+    })
 }
 
 /// 取 exact 里 key 完全相等的连续区间（表是按 key 排好序的）
@@ -528,9 +541,22 @@ fn dedup_words(out: &mut Vec<Hit>) {
         }
     }
     if best.len() == out.len() {
-        return; // 本来就没有重复，不用再扫一遍
+        return; // 本来就没有重复，精确标记也不用改
     }
-    let keep: std::collections::HashSet<usize> = best.into_values().collect();
+    // 同一词只要有一条是精确读音，留下的那条也算精确。
+    let keep: HashSet<usize> = best.values().copied().collect();
+    let mut exact_winners = HashSet::new();
+    for h in out.iter() {
+        if h.exact {
+            if let Some(&j) = best.get(h.word.as_str()) {
+                exact_winners.insert(j);
+            }
+        }
+    }
+    drop(best);
+    for idx in exact_winners {
+        out[idx].exact = true;
+    }
     let mut i = 0usize;
     out.retain(|_| {
         let r = keep.contains(&i);
@@ -571,6 +597,8 @@ fn blended_rank(freq: u64, word: &str, tier: u8) -> f64 {
 /// 1~2 字母前缀走预热的按词频排的表。之前只留 max_cands*3 条，
 /// 用户看到的就永远是那八九个，翻不动。
 pub fn lookup(ascii: &str) -> Vec<Hit> {
+    // 整次查找钉住同一份用户词库，避免读到一半被重载。
+    let _user_snap = crate::user_dict::activate_snap();
     if ascii.is_empty() {
         return Vec::new();
     }
@@ -579,7 +607,8 @@ pub fn lookup(ascii: &str) -> Vec<Hit> {
 
     // 1) 精确：整个读音组都收（最大的一组「yi」557 条）
     for (_, line) in exact_group(idx, ascii) {
-        if let Some(h) = hit_of(line) {
+        if let Some(mut h) = hit_of(line) {
+            h.exact = true;
             out.push(h);
         }
         if out.len() >= MAX_HITS {
@@ -743,6 +772,7 @@ pub fn lookup(ascii: &str) -> Vec<Hit> {
                     ru: rus.join(" | "),
                     freq: 0,
                     tier: 0,
+                    exact: false,
                 });
                 head += 1;
             }
@@ -751,15 +781,20 @@ pub fn lookup(ascii: &str) -> Vec<Hit> {
 
     // 4) 自学习：选过的词排前面（只排 head 之后的普通候选，
     //    短语/整句候选保持头部 —— 见 head 上面的注释）
-    let learned = idx.learned.lock().unwrap();
-    if !learned.is_empty() && head < out.len() {
-        let mut rest = out.split_off(head);
-        rest.sort_by_key(|h| {
-            let c = learned.get(&h.word).copied().unwrap_or(0);
-            std::cmp::Reverse(c)
-        });
-        out.extend(rest);
+    {
+        let learned = idx.learned.lock().unwrap();
+        if !learned.is_empty() && head < out.len() {
+            let mut rest = out.split_off(head);
+            rest.sort_by_key(|h| {
+                let c = learned.get(&h.word).copied().unwrap_or(0);
+                std::cmp::Reverse(c)
+            });
+            out.extend(rest);
+        }
     }
+    // 用户词：默认紧跟内置精确第一名；权重 ≥ 100 才能排到它前面。
+    // 短语和整句占着 head，不会被用户词挤掉。
+    crate::user_dict::merge_hits(&mut out, head, ascii);
     out.truncate(MAX_HITS);
     out
 }
@@ -857,7 +892,14 @@ pub fn phrase(trigger: &str) -> Option<Hit> {
     g.entries
         .iter()
         .find(|(t, _, _)| t.eq_ignore_ascii_case(trigger))
-        .map(|(_, w, r)| Hit { word: w.clone(), pinyin: trigger.to_string(), ru: r.clone(), freq: u64::MAX, tier: 0 })
+        .map(|(_, w, r)| Hit {
+            word: w.clone(),
+            pinyin: trigger.to_string(),
+            ru: r.clone(),
+            freq: u64::MAX,
+            tier: 0,
+            exact: false,
+        })
 }
 
 /// 补全：在「拼音以 ascii 开头、且比它更长」的词条里，挑最高频的那个。
@@ -962,29 +1004,48 @@ fn bigram_count(a: &str, b: &str) -> u32 {
 // 输出是词级直译（词典释义拼接），不做俄语变格/语序调整——
 // 离线词典的极限，成句翻译需要在线模型。
 
+struct ZhEntry {
+    ru: &'static str,
+    freq: u64,
+    ascii: &'static str,
+    disp: &'static str,
+}
+
 struct ZhIndex {
-    /// 中文词 -> (俄语释义, 词频)
-    by_word: HashMap<&'static str, (&'static str, u64)>,
+    /// 中文词 -> 词频最高的那条（同形多读音只留一条，给没有读音的整句翻译用）。
+    by_word: HashMap<&'static str, ZhEntry>,
 }
 
 fn zh_index() -> &'static ZhIndex {
     static Z: OnceLock<ZhIndex> = OnceLock::new();
     Z.get_or_init(|| {
-        let mut by_word: HashMap<&'static str, (&'static str, u64)> = HashMap::new();
+        let mut by_word: HashMap<&'static str, ZhEntry> = HashMap::new();
         for line in RAW.lines().skip(1) {
-            let w = line_word(line);
+            let mut it = line.split('\t');
+            let w = it.next().unwrap_or("");
             if w.is_empty() {
                 continue;
             }
+            let _trad = it.next();
+            let ascii = it.next().unwrap_or("");
+            let disp = it.next().unwrap_or("");
             let ru = line_ru(line);
             if ru.is_empty() {
                 continue; // 没俄语的词条：译不了，也不参与切词
             }
             let f = line_freq(line);
             match by_word.get(w) {
-                Some(&(_, of)) if of >= f => {}
+                Some(old) if old.freq >= f => {}
                 _ => {
-                    by_word.insert(w, (ru, f));
+                    by_word.insert(
+                        w,
+                        ZhEntry {
+                            ru,
+                            freq: f,
+                            ascii,
+                            disp,
+                        },
+                    );
                 }
             }
         }
@@ -1023,8 +1084,21 @@ fn ru_first(ru: &str) -> &str {
 }
 
 /// 查一个词的俄语第一释义。逐字模式用：词上屏时跟在后面。
-pub fn ru_of(word: &str) -> Option<&'static str> {
-    zh_index().by_word.get(word).map(|(ru, _)| ru_first(ru))
+/// 用户释义优先。词不在内置词典里时，只有用户只给了一种俄语才会返回。
+pub fn ru_of(word: &str) -> Option<String> {
+    if let Some(e) = zh_index().by_word.get(word) {
+        let full = crate::user_dict::overlay_ru(word, e.ascii, e.disp, e.ru);
+        let first = ru_first(full.as_ref());
+        if first.is_empty() {
+            None
+        } else {
+            Some(first.to_string())
+        }
+    } else {
+        crate::user_dict::lone_gloss(word)
+            .map(|g| ru_first(&g).to_string())
+            .filter(|s| !s.is_empty())
+    }
 }
 
 /// 词序列 -> 词典直译：逐词查俄语第一释义，空格拼接。
@@ -1032,14 +1106,13 @@ pub fn ru_of(word: &str) -> Option<&'static str> {
 /// 上屏，就该译成 привет，而不是重新切成 你+好）。没俄语的词原样保留；
 /// 整串一个可译词都没有时返回 None。
 pub fn translate_words<'a>(words: impl Iterator<Item = &'a str>) -> Option<String> {
-    let idx = zh_index();
     let mut parts: Vec<String> = Vec::new();
     let mut any_ru = false;
     for w in words {
-        match idx.by_word.get(w) {
-            Some(&(ru, _)) => {
+        match ru_of(w) {
+            Some(ru) => {
                 any_ru = true;
-                parts.push(ru_first(ru).to_string());
+                parts.push(ru);
             }
             None => parts.push(w.to_string()),
         }
