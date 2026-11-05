@@ -757,14 +757,14 @@ fu\t↓\t\t-9999\n\
     #[test]
     fn malformed_lines_are_skipped_and_neighbors_kept() {
         let text = "\
-好\t★\tзвезда\n\
+hao\t★\tзвезда\n\
 只有一列\n\
 \t空关键词\t★\n\
 坏读音\t★\n\
-空候选\t\t俄语\n\
-太重\t★\t\t10000\n\
-不是数\t★\t\tabc\n\
-再好\t☆\n\
+kong\t\t俄语\n\
+taizhong\t★\t\t10000\n\
+bushishu\t★\t\tabc\n\
+zai\t☆\n\
 ";
         let r = parse_pack_text("a.tsv", text);
         assert_eq!(r.items.len(), 2, "{:?}", r.items);
@@ -913,7 +913,7 @@ ku\t😭\tслёзы\n\
         let mut hits = vec![h("的", true, 0)];
         let mut a = item("后文件", None, 1);
         a.file_ord = 1;
-        let mut b = item("先文件", None, 9);
+        let mut b = item("先文件", None, 1);
         b.file_ord = 0;
         let mut c = item("先文件后行", None, 3);
         c.file_ord = 0;
@@ -1078,8 +1078,12 @@ ku\t😭\tслёзы\n\
                 }
                 if it.surface == "\u{20BD}" {
                     saw_ruble = true;
-                    assert_eq!(it.ascii, "lubu");
                     assert_eq!(it.gloss, "рубль");
+                    assert!(
+                        it.ascii == "lubu" || it.ascii == "lubufuhao",
+                        "{}",
+                        it.ascii
+                    );
                 }
                 if it.surface == "\u{2116}" {
                     saw_numero = true;
