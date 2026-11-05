@@ -1,0 +1,81 @@
+# 旁译官方符号包：俄语引号、字母和货币
+# 来源：Unicode 里的 « »、—、№、₽ 和俄语字母。关键词和俄语短释义由旁译项目编写。
+# 字母关键词：小写是 eyu 加名称（ё = eyuyo），大写是 eyud 加同样的名称（Ё = eyudyo）。
+# ь = eyuruan（мягкий знак），ъ = eyuying（твёрдый знак）。
+# 许可：CC BY-SA 4.0。分发时保留这段说明，并以相同方式共享。
+# 列：关键词<TAB>候选<TAB>俄语（可以空着）<TAB>权重（可以空着）
+eluoyinhao	«	левая кавычка
+eluoyinhao	»	правая кавычка
+eyuzuoyin	«	левая кавычка
+eyuyouyin	»	правая кавычка
+eyudiyin	„	нижняя кавычка
+eyupozhe	—	тире
+haomafuhao	№	номер
+lubu	₽	рубль
+lubufuhao	₽	рубль
+eyua	а	буква а
+eyuda	А	заглавная А
+eyube	б	буква б
+eyudbe	Б	заглавная Б
+eyuve	в	буква в
+eyudve	В	заглавная В
+eyuge	г	буква г
+eyudge	Г	заглавная Г
+eyude	д	буква д
+eyudde	Д	заглавная Д
+eyuye	е	буква е
+eyudye	Е	заглавная Е
+eyuyo	ё	буква ё
+eyudyo	Ё	заглавная Ё
+eyuzhe	ж	буква ж
+eyudzhe	Ж	заглавная Ж
+eyuze	з	буква з
+eyudze	З	заглавная З
+eyui	и	буква и
+eyudi	И	заглавная И
+eyuj	й	буква й
+eyudj	Й	заглавная Й
+eyuka	к	буква к
+eyudka	К	заглавная К
+eyuel	л	буква л
+eyudel	Л	заглавная Л
+eyuem	м	буква м
+eyudem	М	заглавная М
+eyuen	н	буква н
+eyuden	Н	заглавная Н
+eyuo	о	буква о
+eyudo	О	заглавная О
+eyupe	п	буква п
+eyudpe	П	заглавная П
+eyuer	р	буква р
+eyuder	Р	заглавная Р
+eyues	с	буква с
+eyudes	С	заглавная С
+eyute	т	буква т
+eyudte	Т	заглавная Т
+eyuu	у	буква у
+eyudu	У	заглавная У
+eyuef	ф	буква ф
+eyudef	Ф	заглавная Ф
+eyuha	х	буква х
+eyudha	Х	заглавная Х
+eyutse	ц	буква ц
+eyudtse	Ц	заглавная Ц
+eyuche	ч	буква ч
+eyudche	Ч	заглавная Ч
+eyusha	ш	буква ш
+eyudsha	Ш	заглавная Ш
+eyushcha	щ	буква щ
+eyudshcha	Щ	заглавная Щ
+eyuying	ъ	твёрдый знак
+eyudying	Ъ	заглавный твёрдый знак
+eyuy	ы	буква ы
+eyudy	Ы	заглавная Ы
+eyuruan	ь	мягкий знак
+eyudruan	Ь	заглавный мягкий знак
+eyuee	э	буква э
+eyudee	Э	заглавная Э
+eyuyu	ю	буква ю
+eyudyu	Ю	заглавная Ю
+eyuya	я	буква я
+eyudya	Я	заглавная Я

@@ -18,24 +18,24 @@ use std::time::SystemTime;
 use crate::dict::Hit;
 
 /// 每个文件最多读这么多字节。再大就截断并记一条警告，避免一个巨大文件拖住启动。
-const MAX_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_BYTES: usize = 256 * 1024;
 /// 每个文件最多收下这么多数据行（空行和 # 注释不计）。
-const MAX_DATA_LINES: usize = 5_000;
+pub(crate) const MAX_DATA_LINES: usize = 5_000;
 /// 警告列表最多留这么多条具体说明，再多就加一行「还有更多」。
-const MAX_WARNINGS: usize = 32;
+pub(crate) const MAX_WARNINGS: usize = 32;
 /// 词头最多多少个 Unicode 字符。
 const MAX_HEAD_CHARS: usize = 32;
 /// 俄语列最多多少个 Unicode 字符。
-const MAX_GLOSS_CHARS: usize = 400;
+pub(crate) const MAX_GLOSS_CHARS: usize = 400;
 /// 去掉声调之后的拼音字母最多多少个。
-const MAX_READING_CHARS: usize = 48;
+pub(crate) const MAX_READING_CHARS: usize = 48;
 /// 权重要落在这个闭区间里。
-const MIN_WEIGHT: i64 = -9_999;
-const MAX_WEIGHT: i64 = 9_999;
+pub(crate) const MIN_WEIGHT: i64 = -9_999;
+pub(crate) const MAX_WEIGHT: i64 = 9_999;
 /// 大于等于这个数，用户词才能排到「该拼音内置精确第一候选」前面。
 pub(crate) const LEAD_WEIGHT: i64 = 100;
 /// 两次查看文件修改时间的最小间隔。
-const CHECK_INTERVAL_MS: u64 = 1_000;
+pub(crate) const CHECK_INTERVAL_MS: u64 = 1_000;
 
 const DICT_FILE: &str = "user-dict.tsv";
 const GLOSS_FILE: &str = "user-gloss.tsv";
@@ -369,13 +369,13 @@ fn read_both(dict_path: &Path, gloss_path: &Path) -> Result<Report, Vec<String>>
     Ok(report)
 }
 
-struct FileBytes {
-    bytes: Vec<u8>,
-    truncated: bool,
-    total_len: u64,
+pub(crate) struct FileBytes {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) truncated: bool,
+    pub(crate) total_len: u64,
 }
 
-fn read_capped(path: &Path) -> Result<FileBytes, Vec<String>> {
+pub(crate) fn read_capped(path: &Path) -> Result<FileBytes, Vec<String>> {
     let label = file_label(path);
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
@@ -411,7 +411,7 @@ fn read_capped(path: &Path) -> Result<FileBytes, Vec<String>> {
     })
 }
 
-fn decode(label: &str, bytes: &[u8], warnings: &mut Vec<String>) -> String {
+pub(crate) fn decode(label: &str, bytes: &[u8], warnings: &mut Vec<String>) -> String {
     match String::from_utf8(bytes.to_vec()) {
         Ok(s) => s,
         Err(e) => {
@@ -507,7 +507,11 @@ fn strip_bom(s: &str) -> &str {
     s.strip_prefix('\u{feff}').unwrap_or(s)
 }
 
-fn data_lines<'a>(file: &str, text: &'a str, warnings: &mut Vec<String>) -> Vec<(usize, &'a str)> {
+pub(crate) fn data_lines<'a>(
+    file: &str,
+    text: &'a str,
+    warnings: &mut Vec<String>,
+) -> Vec<(usize, &'a str)> {
     let mut out = Vec::new();
     let mut count = 0usize;
     for (idx, line) in text.lines().enumerate() {
@@ -746,7 +750,7 @@ fn check_reading(
     }
 }
 
-fn parse_weight(s: &str) -> Result<Option<i64>, &'static str> {
+pub(crate) fn parse_weight(s: &str) -> Result<Option<i64>, &'static str> {
     if s.is_empty() {
         return Ok(None);
     }
@@ -802,7 +806,7 @@ fn build_lone(gloss: &HashMap<String, HashMap<String, Vec<GlossSlot>>>) -> HashM
         .collect()
 }
 
-fn push_warning(out: &mut Vec<String>, msg: String) {
+pub(crate) fn push_warning(out: &mut Vec<String>, msg: String) {
     if out.len() < MAX_WARNINGS {
         out.push(msg);
     } else if out.len() == MAX_WARNINGS {
@@ -810,13 +814,13 @@ fn push_warning(out: &mut Vec<String>, msg: String) {
     }
 }
 
-struct Reading {
-    ascii: String,
-    tone: String,
-    raw: String,
+pub(crate) struct Reading {
+    pub(crate) ascii: String,
+    pub(crate) tone: String,
+    pub(crate) raw: String,
 }
 
-fn analyze_reading(raw: &str) -> Result<Reading, &'static str> {
+pub(crate) fn analyze_reading(raw: &str) -> Result<Reading, &'static str> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err("读音为空");
@@ -1119,13 +1123,14 @@ fn merge_prepared(hits: &mut Vec<Hit>, head: usize, words: &[UserWord]) {
     sort_band(&mut normal);
     sort_band(&mut low);
 
-    let take = |pulled: &mut HashMap<String, Hit>, u: UserWord| -> Hit {
+    let take = |pulled: &mut HashMap<String, Hit>, u: UserWord, rank_band: u8| -> Hit {
         match pulled.remove(&u.word) {
             Some(mut h) => {
                 if !u.gloss.is_empty() {
                     h.ru = u.gloss.clone();
                 }
                 h.exact = true;
+                h.rank_band = rank_band;
                 h
             }
             None => Hit {
@@ -1135,13 +1140,17 @@ fn merge_prepared(hits: &mut Vec<Hit>, head: usize, words: &[UserWord]) {
                 freq: 0,
                 tier: 0,
                 exact: true,
+                rank_band,
             },
         }
     };
 
-    let lead_hits: Vec<Hit> = lead.into_iter().map(|u| take(&mut pulled, u)).collect();
-    let normal_hits: Vec<Hit> = normal.into_iter().map(|u| take(&mut pulled, u)).collect();
-    let low_hits: Vec<Hit> = low.into_iter().map(|u| take(&mut pulled, u)).collect();
+    let lead_hits: Vec<Hit> = lead.into_iter().map(|u| take(&mut pulled, u, 1)).collect();
+    let normal_hits: Vec<Hit> = normal
+        .into_iter()
+        .map(|u| take(&mut pulled, u, 2))
+        .collect();
+    let low_hits: Vec<Hit> = low.into_iter().map(|u| take(&mut pulled, u, 3)).collect();
     let lead_n = lead_hits.len();
 
     let top = hits
@@ -1233,6 +1242,25 @@ fn utf8_width(b: u8) -> usize {
 }
 
 #[cfg(test)]
+pub(crate) struct TestInstall;
+
+#[cfg(test)]
+impl Drop for TestInstall {
+    fn drop(&mut self) {
+        TEST_SNAP.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// 测试里装上一份用户词库。离开作用域就清掉，避免串到别的测试。
+#[cfg(test)]
+pub(crate) fn testing_install(dict: &str, gloss: &str) -> TestInstall {
+    let report = parse_texts(dict, gloss);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    TEST_SNAP.with(|c| *c.borrow_mut() = Some(std::sync::Arc::new(report.snap)));
+    TestInstall
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1284,6 +1312,7 @@ mod tests {
             freq: 1,
             tier: 0,
             exact,
+            rank_band: 0,
         }
     }
 

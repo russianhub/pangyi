@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "packs": [
+    {
+      "name": "emoji-common",
+      "description": "常用表情。用拼音打出笑、哭、赞、心、太阳这些符号，旁边是短俄语。",
+      "filename": "emoji-common.tsv",
+      "sha256": "ab9895bd507b9ac00726647a4f979f15bb1d87e78bcd29cfd20a12d2987a16a0",
+      "count": 70,
+      "license": "CC BY-SA 4.0"
+    },
+    {
+      "name": "kaomoji",
+      "description": "颜文字。开心、哭、无奈、翻桌这些常见写法，旁边是短俄语。",
+      "filename": "kaomoji.tsv",
+      "sha256": "58fde1703ac8cce703fdff82037c576b8d51fbf38d1205dee5de7379da8f01a3",
+      "count": 59,
+      "license": "CC BY-SA 4.0"
+    },
+    {
+      "name": "symbols-common",
+      "description": "常用标点、数学符号和货币。例如句号、不等号、欧元、百分号。",
+      "filename": "symbols-common.tsv",
+      "sha256": "2d53a713adb4e609fa6acd7dc4b992bfa609eda3c818d885027f4ecb57aa604f",
+      "count": 66,
+      "license": "CC BY-SA 4.0"
+    },
+    {
+      "name": "symbols-russian",
+      "description": "俄语相关符号：«»、破折号、№、卢布 ₽，以及 33 个俄语字母的大小写。",
+      "filename": "symbols-russian.tsv",
+      "sha256": "000c7500386f0af43e6f77a6bc8b63b4ec4cbfd691b8b1e394b4ff1617830a26",
+      "count": 75,
+      "license": "CC BY-SA 4.0"
+    }
+  ]
+}

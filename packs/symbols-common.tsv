@@ -1,0 +1,70 @@
+# 旁译官方符号包：标点、数学和货币
+# 来源：Unicode 标准里的字符。关键词和俄语短释义由旁译项目编写。
+# 许可：CC BY-SA 4.0。符号本身是 Unicode 字符；这份编排和释义以相同方式共享。分发时保留这段说明。
+# 列：关键词<TAB>候选<TAB>俄语（可以空着）<TAB>权重（可以空着）
+douhao	，	китайская запятая
+juhao	。	китайская точка
+gantanhao	！	восклицательный знак
+wenhao	？	вопросительный знак
+maohao	：	двоеточие
+fenhao	；	точка с запятой
+dunhao	、	перечислительная запятая
+shenglvehao	…	многоточие
+jiangehao	·	интерпункт
+zuoyinhao	「	левая китайская кавычка
+youyinhao	」	правая китайская кавычка
+zuoshuminghao	《	
+youshuminghao	》	
+zuokuohao	（	левая скобка
+youkuohao	）	правая скобка
+pozhehao	—	тире
+duanpozhehao	–	короткое тире
+jiahao	+	плюс
+jianhao	−	минус
+chenghao	×	умножение
+chuhao	÷	деление
+denghao	=	равно
+budengyu	≠	не равно
+yuedengyu	≈	примерно равно
+xiaoyu	<	меньше
+dayu	>	больше
+xiaoyudengyu	≤	меньше или равно
+dayudengyu	≥	больше или равно
+zhengfu	±	плюс-минус
+wuqiong	∞	бесконечность
+genhao	√	корень
+pai	π	пи
+dushu	°	градус
+baifenhao	%	процент
+qianfenhao	‰	промилле
+pingfang	²	квадрат
+lifang	³	куб
+erfenyi	½	одна вторая
+sifenzhiyi	¼	одна четвёртая
+sifenzhisan	¾	три четверти
+jifen	∫	интеграл
+qiuhe	∑	сумма
+shuyu	∈	принадлежит
+chuizhi	⊥	перпендикуляр
+pingxing	∥	параллельно
+meiyuan	$	доллар
+ouyuan	€	евро
+yingbang	£	фунт
+riyuan	¥	иена
+meifen	¢	цент
+hanyuan	₩	вона
+yinduluobi	₹	рупия
+taizhu	฿	бат
+banquan	©	авторское право
+zhuceshangbiao	®	зарегистрированный знак
+shangbiao	™	товарный знак
+aite	@	собака
+jinghao	#	решётка
+yuhao	&	амперсанд
+xinghao	*	звёздочка
+xiegang	/	косая черта
+fanxiegang	\	обратная косая черта
+shuxian	|	вертикальная черта
+xiahuaxian	_	подчёркивание
+tuozifu	^	циркумфлекс
+bolanghao	~	тильда

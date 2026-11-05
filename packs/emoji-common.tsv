@@ -1,0 +1,76 @@
+# 旁译官方表情包：常用表情
+# 来源：本文件由旁译项目编写。表情是 Unicode 里的单个码位，没有 ZWJ，没有 VS16，没有旗帜，没有按键帽。
+# 关键词是普通话读音，不标声调。俄语是短释义，不是整句，也不是 Unicode 官方译名。
+# 许可：CC BY-SA 4.0。分发时保留这段说明，并以相同方式共享。
+# 列：关键词<TAB>候选<TAB>俄语（可以空着）<TAB>权重（可以空着）
+# 权重留空：排在这个拼音的内置精确第一候选后面。写成 100 或更大才会排到它前面。
+xiao	😄	улыбка
+xiaolian	😄	улыбка
+kaixin	😃	радость
+weixiao	😊	улыбка
+xixi	😁	улыбка
+daxiao	😆	смех
+haha	😂	смех
+xiaoku	😂	смех до слёз
+xiaofan	🤣	хохот
+kuxiao	😅	неловкая улыбка
+zhayan	😉	подмигивание
+xihuan	😍	нравится
+qinwen	😘	поцелуй
+mojing	😎	очки
+ku	😢	грусть
+kuqi	😢	грусть
+nanguo	😢	грусть
+daku	😭	слёзы
+shengqi	😠	злость
+fennu	😡	гнев
+sikao	🤔	думает
+shuijiao	😴	сон
+shuimian	💤	сон
+zan	👍	отлично
+bang	👍	отлично
+cai	👎	плохо
+haode	👌	хорошо
+guzhang	👏	аплодисменты
+xiexie	🙏	спасибо
+qingqiu	🙏	просьба
+woshou	🤝	рукопожатие
+huishou	👋	машет рукой
+yongbao	🤗	объятие
+xin	❤	сердце
+aixin	❤	сердце
+shangxin	💔	разбитое сердце
+huo	🔥	огонь
+xingxing	⭐	звезда
+taiyang	☀	солнце
+yueliang	🌙	луна
+shandian	⚡	молния
+xuehua	❄	снежинка
+qingzhu	🎉	празднование
+liwu	🎁	подарок
+wancheng	✅	готово
+cuowu	❌	нет
+wenhao	❓	вопросительный знак
+yanjing	👀	глаза
+jiayou	💪	давай
+liliang	💪	сила
+mao	🐱	кошка
+gou	🐶	собака
+zhu	🐷	свинья
+yinghua	🌸	сакура
+meigui	🌹	роза
+pingguo	🍎	яблоко
+kafei	☕	кофе
+pijiu	🍺	пиво
+zuqiu	⚽	футбол
+lanqiu	🏀	баскетбол
+yinyue	🎵	музыка
+dengpao	💡	лампочка
+zhuyi	💡	идея
+biaoji	📌	булавка
+dianhua	📞	телефон
+feiji	✈	самолёт
+fangzi	🏠	дом
+qiche	🚗	машина
+naozhong	⏰	будильник
+manfen	💯	сто баллов

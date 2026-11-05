@@ -25,6 +25,8 @@ simplified  traditional  pinyin_ascii  pinyin_display  pos  freq  ru  initials  
 
 `ru` 里多个义项用 ` | ` 分隔。`src` 是这条释义从哪一路来的。
 
+`packs/*.tsv` 不在这张表里，也不 `include_str!` 进 DLL。它们是用户下载到本机后再读的表情包和符号包，见 [表情包](emoji-packs.md)。
+
 ## 许可
 
 以 `NOTICE.md` 和脚本文件头为准。
