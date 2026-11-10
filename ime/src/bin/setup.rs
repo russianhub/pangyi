@@ -10,6 +10,9 @@ use std::path::Path;
 use windows::core::{PCWSTR, GUID};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Shell::ShellExecuteW;
+
+#[path = "setup/auth.rs"]
+mod auth;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 // 组件直接打进安装程序里（构建前由脚本放到 ime/payload/）
@@ -488,6 +491,12 @@ fn main() {
         let args: Vec<String> = std::env::args().collect();
         let do_uninstall = args.iter().any(|a| a == "--uninstall");
         let force_install = args.iter().any(|a| a == "--install");
+        let open_account = args.iter().any(|a| a == "--account");
+
+        if open_account {
+            auth::open_account_window();
+            return;
+        }
 
         // 已经是最新版 → 直接开设置窗口（不需要 UAC）
         if !do_uninstall && !force_install && installed_current() {
