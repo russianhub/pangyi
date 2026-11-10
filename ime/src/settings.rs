@@ -372,9 +372,9 @@ fn draw(dc: HDC, f: HFONT, color: COLORREF, x: i32, y: i32, s: &str) -> i32 {
 
 // 窗口与布局（逻辑像素，经 sc() 按 DPI 缩放）
 const WIN_W: i32 = 360;
-// 10 行卡底 = 108+10×44+9×8 = 620，FOOTER_Y 留 10，窗口高 = 底 + 38
-// （v4.15.0 加「表情模式」行：9 行 → 10 行，WIN_H 616→658、FOOTER_Y 578→630）
-const WIN_H: i32 = 658;
+// 11 行卡底 = 108+11×44+10×8 = 672，FOOTER_Y 留 10，窗口高 = 底 + 38。
+// 账号只打开主程序的独立登录窗；输入法 DLL 本身不联网。
+const WIN_H: i32 = 710;
 const HEADER_H: i32 = 96; // 头部渐变横幅（卡通 + 标题）
 const MARGIN: i32 = 12; // 卡片左右留白
 const CARDS_TOP: i32 = 108;
@@ -386,7 +386,7 @@ const PILL_PAD_X: i32 = 10;
 const PILL_PAD_Y: i32 = 4;
 const PILL_GAP: i32 = 8;
 const PILL_RADIUS: i32 = 8;
-const FOOTER_Y: i32 = 630; // 底部统计 + 关闭按钮
+const FOOTER_Y: i32 = 682; // 底部统计 + 关闭按钮
 
 /// 每行的选项：标签 + 选项文本 + 动作号
 fn rows() -> Vec<(&'static str, Vec<(&'static str, i32)>)> {
@@ -404,6 +404,7 @@ fn rows() -> Vec<(&'static str, Vec<(&'static str, i32)>)> {
         // v4.15.0：表情模式。开 = 拼音正好撞上表情关键词（xiao/ku/aini…）时
         // emoji + 颜文字候选排最前，空格上屏表情。
         ("表情模式", vec![("开", 25), ("关", 26)]),
+        ("旁译账号", vec![("邮箱验证码登录", 27)]),
         ("自定义短语", vec![("打开短语文件", 12)]),
     ]
 }
@@ -938,6 +939,20 @@ fn apply(action: i32) {
                     PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL,
                 );
                 let _ = v;
+            }
+        }
+        27 => {
+            // 认证逻辑只存在于安装/设置主程序。这里重新启动当前 exe 的 --account
+            // 入口，避免把网络请求和登录令牌处理带进 TSF 输入法 DLL。
+            let exe = std::env::current_exe().unwrap_or_else(|_| "pangyi.exe".into());
+            let app = wide(&exe.to_string_lossy());
+            let verb = wide("open");
+            let args = wide("--account");
+            unsafe {
+                windows::Win32::UI::Shell::ShellExecuteW(
+                    HWND(0), PCWSTR(verb.as_ptr()), PCWSTR(app.as_ptr()),
+                    PCWSTR(args.as_ptr()), PCWSTR::null(), SW_SHOWNORMAL,
+                );
             }
         }
         _ => {}

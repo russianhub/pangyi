@@ -10,6 +10,9 @@
 
 免费开源 · 本机运行 · 无广告 · 无需联网查词
 
+账号是可选功能。邮箱验证码登录只由桌面设置程序联网处理；不登录也能使用输入法、
+本地词库和全部打字功能，输入法 DLL 在打字时不会访问登录服务。
+
 ## 先试这三个输入
 
 | 你想做什么 | 这样操作 |
@@ -90,6 +93,12 @@
 欢迎在 [Issues](https://github.com/russianhub/pangyi/issues) 用中文反馈。请附 Windows 版本、旁译版本、应用名称、复现步骤；截图前请遮住私人信息。
 
 卸载可运行 `"C:\Program Files\Pangyi\pangyi.exe" --uninstall`，完成后按提示注销或重启。
+
+## 可选账号
+
+设置中的「旁译账号」支持邮箱 6 位验证码登录，首次登录会自动注册。登录状态用
+Windows DPAPI 加密后保存在当前用户的 `%LOCALAPPDATA%\Pangyi\account.dat`，退出登录
+会删除该文件。账号后端的部署与构建配置见 [邮箱验证码登录](docs/email-login.md)。
 
 ## 从源码构建
 

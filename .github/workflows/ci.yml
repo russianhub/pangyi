@@ -74,4 +74,7 @@ jobs:
         run: ./.github/scripts/setup-llvm-mingw.ps1
 
       - name: 测试并构建 DLL 与安装包
+        env:
+          PANGYI_SUPABASE_URL: ${{ vars.PANGYI_SUPABASE_URL }}
+          PANGYI_SUPABASE_PUBLISHABLE_KEY: ${{ vars.PANGYI_SUPABASE_PUBLISHABLE_KEY }}
         run: ./.github/scripts/build-windows.ps1

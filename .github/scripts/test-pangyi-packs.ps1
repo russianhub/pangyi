@@ -21,8 +21,11 @@ function Count-DataLines {
     return $n
 }
 
-# 输入法源码里不要出现联网 API。下载只在 scripts/pangyi-packs.ps1。
-$src = Get-ChildItem -Path (Join-Path $Repo "ime\src") -Filter *.rs -Recurse
+# TSF 输入法 DLL 源码里不要出现联网 API。桌面主程序的账号模块是唯一例外：
+# 它位于 bin/setup 子模块，只由 setup.exe 引用，不会编进 pangyi_ime.dll。
+$accountDir = Join-Path $Repo "ime\src\bin\setup"
+$src = Get-ChildItem -Path (Join-Path $Repo "ime\src") -Filter *.rs -Recurse |
+    Where-Object { -not $_.FullName.StartsWith($accountDir, [StringComparison]::OrdinalIgnoreCase) }
 $bad = Select-String -Path $src.FullName -Pattern 'WinHttp|InternetOpen|HttpClient|TcpStream|reqwest::|hyper::|ureq::'
 if ($bad) {
     throw "IME source looks networked: $($bad | ForEach-Object { $_.Path + ':' + $_.LineNumber })"
