@@ -1,0 +1,10 @@
+# 旁译账号配置示例。复制成 account.toml 后再填写。
+# 放到 %ProgramData%\Pangyi\account.toml，或放到 pangyi.exe 同目录。
+# anon_key 只能是 Supabase 的 anon / publishable key。
+# 不要写 service_role、sb_secret、SMTP 密码或 JWT secret。
+# url 或 anon_key 留空时，登录不可用，不会显示登录成功。
+
+provider = supabase
+url =
+anon_key =
+create_user = true

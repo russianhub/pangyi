@@ -942,17 +942,26 @@ fn apply(action: i32) {
             }
         }
         27 => {
-            // 认证逻辑只存在于安装/设置主程序。这里重新启动当前 exe 的 --account
-            // 入口，避免把网络请求和登录令牌处理带进 TSF 输入法 DLL。
+            // 只启动同一个主程序的 --account 进程。这里不联网，也不读写登录令牌。
             let exe = std::env::current_exe().unwrap_or_else(|_| "pangyi.exe".into());
             let app = wide(&exe.to_string_lossy());
             let verb = wide("open");
             let args = wide("--account");
             unsafe {
-                windows::Win32::UI::Shell::ShellExecuteW(
+                let rc = windows::Win32::UI::Shell::ShellExecuteW(
                     HWND(0), PCWSTR(verb.as_ptr()), PCWSTR(app.as_ptr()),
                     PCWSTR(args.as_ptr()), PCWSTR::null(), SW_SHOWNORMAL,
                 );
+                if rc.0 <= 32 {
+                    let text = wide("没能打开账号窗口。打字、词库和表情包不受影响。");
+                    let title = wide("旁译账号");
+                    let _ = MessageBoxW(
+                        HWND(0),
+                        PCWSTR(text.as_ptr()),
+                        PCWSTR(title.as_ptr()),
+                        MB_OK | MB_ICONINFORMATION,
+                    );
+                }
             }
         }
         _ => {}

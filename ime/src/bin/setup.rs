@@ -19,6 +19,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 const DLL64: &[u8] = include_bytes!("../../payload/pangyi_ime.dll");
 const DLL32: &[u8] = include_bytes!("../../payload/pangyi_ime-x86.dll");
 const ICO: &[u8] = include_bytes!("../../payload/pangyi.ico");
+const ACCOUNT_EXAMPLE: &[u8] = include_bytes!("../../../account/account.toml.example");
+const ACCOUNT_EXAMPLE_NAME: &str = "account.toml.example";
 
 const DIR: &str = r"C:\Program Files\Pangyi";
 const DLL64_NAME: &str = "pangyi_ime.dll";
@@ -266,7 +268,15 @@ fn purge_old_versions(dir: &Path, keep: &[String]) {
 
     // 1) 安装目录：只留这一轮注册的那两个 DLL，外加"那一个软件"
     //    （旧的 pangyi-settings.exe / pangyi-setup.exe 现在都并进单一软件了，要删掉）
-    let keep_names = [DLL64_NAME, DLL32_NAME, APP_NAME, ICO_NAME, VERSION_FILE];
+    let keep_names = [
+        DLL64_NAME,
+        DLL32_NAME,
+        APP_NAME,
+        ICO_NAME,
+        VERSION_FILE,
+        ACCOUNT_EXAMPLE_NAME,
+        "account.toml",
+    ];
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
@@ -367,6 +377,8 @@ fn install() {
     }
     let ico = dir.join(ICO_NAME);
     let _ = std::fs::write(&ico, ICO);
+    // 示例里没有地址和密钥。真正的 account.toml 若已存在，不要覆盖。
+    let _ = std::fs::write(dir.join(ACCOUNT_EXAMPLE_NAME), ACCOUNT_EXAMPLE);
     unsafe { shortcuts(); }
 
     let d64s = write_or_versioned(dir, DLL64_NAME, DLL64);
@@ -456,7 +468,7 @@ fn uninstall() {
     if let Ok(profile) = std::env::var("USERPROFILE") {
         let _ = std::fs::remove_file(Path::new(&profile).join("Desktop").join(DESKTOP_APP));
     }
-    for f in [DLL64_NAME, DLL32_NAME, ICO_NAME, SETTINGS_NAME, "pangyi-setup.exe", APP_NAME, VERSION_FILE] {
+    for f in [DLL64_NAME, DLL32_NAME, ICO_NAME, SETTINGS_NAME, "pangyi-setup.exe", APP_NAME, VERSION_FILE, ACCOUNT_EXAMPLE_NAME] {
         let _ = std::fs::remove_file(dir.join(f));
     }
     let _ = std::fs::remove_dir(dir);
