@@ -69,6 +69,44 @@ sys.exit(0 if sys.argv[2].encode('ascii') in data else 1)
     if ($code -ne 0) { throw "missing '$Text' in $Path" }
 }
 
+function Assert-ImeStaysOffline {
+    param([string]$Path, [string]$Label)
+    # 账号协议字符串和 WinHTTP 只能出现在主程序里，不能出现在输入法 DLL。
+    $py = @"
+import pathlib, sys
+data = pathlib.Path(sys.argv[1]).read_bytes()
+for text in (b"/auth/v1", b"account.dat"):
+    if text in data:
+        sys.exit(1)
+sys.exit(0)
+"@
+    $tmp = Join-Path $env:RUNNER_TEMP "pangyi-assert-offline.py"
+    if (-not $env:RUNNER_TEMP) { $tmp = Join-Path $env:TEMP "pangyi-assert-offline.py" }
+    [System.IO.File]::WriteAllText($tmp, $py)
+    $prev = $PSNativeCommandUseErrorActionPreference
+    $PSNativeCommandUseErrorActionPreference = $false
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        & py -3 $tmp $Path
+    } else {
+        & python $tmp $Path
+    }
+    $code = $LASTEXITCODE
+    $PSNativeCommandUseErrorActionPreference = $prev
+    if ($code -ne 0) { throw "$Label contains account protocol strings" }
+    $objdump = Join-Path $Repo "tools\llvm-mingw\bin\llvm-objdump.exe"
+    if (Test-Path $objdump) {
+        $prev2 = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $lines = & $objdump -p $Path
+        $PSNativeCommandUseErrorActionPreference = $prev2
+        foreach ($line in $lines) {
+            if ($line -match "DLL Name:\s*(.+)$" -and $Matches[1].Trim() -ieq "winhttp.dll") {
+                throw "$Label imports winhttp.dll"
+            }
+        }
+    }
+}
+
 function Get-ImportDlls {
     param([string]$Path)
     $objdump = Join-Path $MingwBin "llvm-objdump.exe"
@@ -109,7 +147,9 @@ foreach ($name in @("pangyi_ime.dll", "pangyi_ime-x86.dll", "pangyi.ico")) {
 }
 
 Write-Host "rustc $(rustc --version)"
-cargo test --locked --manifest-path ime/Cargo.toml
+Write-Host "account tests"
+cargo test --locked --manifest-path account/Cargo.toml
+cargo test --locked --features account --manifest-path ime/Cargo.toml
 
 # DLL 构建时不要留着占位图标，让 build.rs 走「图标不存在就跳过」那条路。
 Remove-Item -Recurse -Force $payload
@@ -120,6 +160,7 @@ $dll64 = Join-Path $Repo "ime\target\release\pangyi_ime.dll"
 Assert-MinBytes $dll64 20000000 "x64 dll"
 Assert-Pe $dll64 0x8664 "x64 dll"
 Assert-Ascii $dll64 "DllGetClassObject"
+Assert-ImeStaysOffline $dll64 "x64 dll"
 
 $stubC = Join-Path $Repo "ime\build\x86-stub.c"
 $stubO = Join-Path $Repo "ime\build\x86-stub.o"
@@ -148,6 +189,7 @@ $dll32 = Join-Path $Repo "ime\target\i686-pc-windows-gnu\release\pangyi_ime.dll"
 Assert-MinBytes $dll32 20000000 "x86 dll"
 Assert-Pe $dll32 0x014C "x86 dll"
 Assert-Ascii $dll32 "DllGetClassObject"
+Assert-ImeStaysOffline $dll32 "x86 dll"
 $imports = Get-ImportDlls $dll32
 Write-Host ("x86 imports: " + ($imports -join ", "))
 foreach ($bad in @("libunwind.dll", "libgcc_s_dw2-1.dll", "libgcc_s_seh-1.dll")) {
@@ -172,10 +214,11 @@ Invoke-Python @(
 Assert-MinBytes (Join-Path $payload "pangyi.ico") 1000 "pangyi.ico"
 
 Write-Host "building setup installer"
-cargo build --release --bin setup --locked --manifest-path ime/Cargo.toml
+cargo build --release --bin setup --features account --locked --manifest-path ime/Cargo.toml
 $setup = Join-Path $Repo "ime\target\release\setup.exe"
 Assert-MinBytes $setup 40000000 "setup.exe"
 Assert-Pe $setup 0x8664 "setup.exe"
+Assert-Ascii $setup "/auth/v1"
 
 if ($env:GITHUB_STEP_SUMMARY) {
     $x64n = (Get-Item $dll64).Length
