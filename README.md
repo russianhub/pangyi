@@ -140,8 +140,9 @@ Cargo 注册表和 `ime/target` 走 Actions 缓存；llvm-mingw 另有一份缓�
 
 把草稿 Release 点「发布」后，网站仓库（russianhub/opensource-sites）的
 `pangyi-manifest` 同步工作流（每小时，或手动触发）会下载安装包、计算 SHA256 并用
-ed25519 签名，把 `pangyi-vX.Y.Z.exe`、`pangyi-latest.exe` 和 `latest.json` 放进网站
-发布目录，eyuxq.com 上的下载按钮随之更新，已安装用户下次登录会收到更新提醒。
+ed25519 签名，把 `latest.json` 放进网站发布目录并重新部署：eyuxq.com 上的下载按钮
+随之更新（直链指向 GitHub Release 的 CDN，安装包不进网站仓库），已安装用户下次
+登录会收到更新提醒。
 详见 [updater/README.md](updater/README.md)。
 
 ## 许可

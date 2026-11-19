@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | `updater/`（本目录） | pangyi 主仓库 | 更新程序源码，随 Release 一起构建并打进安装包 |
 | `docs/releases/<标签>.md` | pangyi 主仓库 | 发布说明（前 8 行会显示在更新弹窗里） |
-| `.github/workflows/pangyi-manifest.yml` | 网站仓库 russianhub/opensource-sites | 每小时查一次 pangyi 的最新正式 Release，有新版本就下载安装包、签名并推 `dist/latest.json` 和 `dist/download/`，网站随之自动更新 |
+| `.github/workflows/pangyi-manifest.yml` | 网站仓库 russianhub/opensource-sites | 每小时查一次 pangyi 的最新正式 Release，有新版本就下载安装包、算 SHA256、签名并推 `dist/latest.json`（安装包不进网站仓库，下载直链指向 GitHub Release），随后自行部署 Pages |
 | `.github/scripts/pangyi-make-manifest.py` | 网站仓库 | 生成并签名 latest.json |
 | `dist/pangyi-dl.js` | 网站仓库 | 网站下载按钮：从 latest.json 读版本/日期/SHA256 |
 
@@ -35,12 +35,13 @@ openssl pkey -in pangyi-sign.pem -pubout -outform DER | tail -c 32 | base64
 2. 推 `v*` 标签 → CI 构建安装包和更新程序（release workflow 会把 updater 的版本号
    同步成标签），创建**草稿** Release。
 3. 在 GitHub 上核对校验值后点「发布」。
-4. 其余自动完成：网站仓库的同步工作流（每小时，或手动 Run workflow）会把安装包和
-   签名清单推到 eyuxq.com，官网下载按钮更新，已安装用户下次登录收到提醒。
+4. 其余自动完成：网站仓库的同步工作流（每小时，或手动 Run workflow）会下载安装包、
+   计算 SHA256 并签名，把 latest.json 推到 eyuxq.com 并重新部署，官网下载按钮更新，
+   已安装用户下次登录收到提醒。安装包本体由 GitHub Release 直链提供（>100MB 不进仓库）。
 
 ## 注意
 
 - 已安装的老版本没有更新程序，需要手动装一次带更新程序的版本。
-- 网站仓库每发一版会多约一个安装包大小的历史体积；如果仓库明显变大，把安装包
-  改放对象存储（如 Cloudflare R2），只需改同步工作流里的上传步骤和 `DOWNLOAD_BASE`。
+- 安装包直接由 GitHub Release 的 CDN 提供，不占网站仓库空间。若以后想用自己的
+  域名分发，改同步工作流里的 `DOWNLOAD_BASE` 指向对象存储即可。
 - 官网文案：输入法本体完全离线；更新检查是独立组件，只请求版本信息，可在设置里关闭。
