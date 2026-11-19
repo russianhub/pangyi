@@ -108,7 +108,8 @@ cd ime
 cargo build --release                    # 64 位 pangyi_ime.dll（cdylib）
 # 32 位 DLL：需要 tools/llvm-mingw，并把 build/x86-stub.c 编成 build/x86-stub.o
 # 再链进 i686-pc-windows-gnu（做法与 CI 相同，见下一节）
-# 安装包 exe：把两个 DLL 和 pangyi.ico 放进 ime/payload/ 后
+# 安装包 exe：把两个 DLL、pangyi.ico 和 pangyi-updater.exe 放进 ime/payload/ 后
+cargo build --release --manifest-path updater/Cargo.toml   # updater/target/release/pangyi-updater.exe
 cargo build --release --bin setup        # ime/target/release/setup.exe
 ```
 
@@ -134,7 +135,13 @@ cargo build --release --bin setup        # ime/target/release/setup.exe
 
 Cargo 注册表和 `ime/target` 走 Actions 缓存；llvm-mingw 另有一份缓存。
 
-`.github/workflows/release.yml` 在推送 `v*` 标签（例如 `v4.18.0`）时跑同一套构建，把安装包命名为 `pangyi-<标签>.exe`，并写一个 `sha256sum -c` 能用的 `.sha256` 文件。然后用 `gh release create --draft` 把这两个文件上传到该标签的草稿 Release。说明正文用 `docs/releases/<标签>.md`（`v4.18.0` 就是 `docs/releases/v4.18.0.md`）；没有这个文件，工作流失败，不创建 Release。草稿要人在 GitHub 上核对校验值后再公开。这个标签如果已经有 Release（含草稿），工作流会失败并留下原来的附件。用的是 Actions 自带的 `GITHUB_TOKEN`，不用另配 secret。权限是 `contents: write`（创建 Release）和 `actions: write`（写缓存）。版本号不写在工作流里：安装包里的版本来自 `ime/Cargo.toml`。
+`.github/workflows/release.yml` 在推送 `v*` 标签（例如 `v4.18.0`）时跑同一套构建，把安装包命名为 `pangyi-<标签>.exe`，并写一个 `sha256sum -c` 能用的 `.sha256` 文件。然后用 `gh release create --draft` 把这两个文件上传到该标签的草稿 Release。说明正文用 `docs/releases/<标签>.md`（`v4.18.0` 就是 `docs/releases/v4.18.0.md`）；没有这个文件，工作流失败，不创建 Release。草稿要人在 GitHub 上核对校验值后再公开。这个标签如果已经有 Release（含草稿），工作流会失败并留下原来的附件。用的是 Actions 自带的 `GITHUB_TOKEN`，不用另配 secret。权限是 `contents: write`（创建 Release）和 `actions: write`（写缓存）。版本号不写在工作流里：安装包里的版本来自 `ime/Cargo.toml`；release workflow 会把
+`updater/Cargo.toml` 的版本号同步成标签后一起构建更新程序。
+
+把草稿 Release 点「发布」后，`.github/workflows/publish-manifest.yml` 会下载安装包、
+计算 SHA256 并用 ed25519 签名，把 `pangyi-vX.Y.Z.exe`、`pangyi-latest.exe` 和
+`latest.json` 推到网站仓库，网站上的下载按钮随之更新，已安装用户下次登录会收到
+更新提醒。详见 [updater/README.md](updater/README.md)。
 
 ## 许可
 

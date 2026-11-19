@@ -32,6 +32,9 @@ static CNPUNCT: AtomicBool = AtomicBool::new(true);
 static TRMODE: AtomicI32 = AtomicI32::new(0);
 /// 配色（强调色）：0 青 / 1 粉 / 2 橙 / 3 紫 / 4 绿。默认青 —— 老用户行为不变。
 static ACCENT: AtomicI32 = AtomicI32::new(0);
+/// 自动检查更新开关（读 pangyi-updater 的 updater.json；文件不存在按默认「开」）。
+/// init() 里读一次文件，apply() 切开关时同步改。
+static UPDATER_ON: AtomicBool = AtomicBool::new(true);
 
 static STANDALONE: AtomicBool = AtomicBool::new(false);
 static mut WND: HWND = HWND(0);
@@ -372,9 +375,9 @@ fn draw(dc: HDC, f: HFONT, color: COLORREF, x: i32, y: i32, s: &str) -> i32 {
 
 // 窗口与布局（逻辑像素，经 sc() 按 DPI 缩放）
 const WIN_W: i32 = 360;
-// 11 行卡底 = 108+11×44+10×8 = 672，FOOTER_Y 留 10，窗口高 = 底 + 38。
+// 12 行卡底 = 108+12×44+11×8 = 724，FOOTER_Y 留 10，窗口高 = 底 + 28。
 // 账号只打开主程序的独立登录窗；输入法 DLL 本身不联网。
-const WIN_H: i32 = 710;
+const WIN_H: i32 = 762;
 const HEADER_H: i32 = 96; // 头部渐变横幅（卡通 + 标题）
 const MARGIN: i32 = 12; // 卡片左右留白
 const CARDS_TOP: i32 = 108;
@@ -386,7 +389,7 @@ const PILL_PAD_X: i32 = 10;
 const PILL_PAD_Y: i32 = 4;
 const PILL_GAP: i32 = 8;
 const PILL_RADIUS: i32 = 8;
-const FOOTER_Y: i32 = 682; // 底部统计 + 关闭按钮
+const FOOTER_Y: i32 = 734; // 底部统计 + 关闭按钮
 
 /// 每行的选项：标签 + 选项文本 + 动作号
 fn rows() -> Vec<(&'static str, Vec<(&'static str, i32)>)> {
@@ -406,6 +409,8 @@ fn rows() -> Vec<(&'static str, Vec<(&'static str, i32)>)> {
         ("表情模式", vec![("开", 25), ("关", 26)]),
         ("旁译账号", vec![("邮箱验证码登录", 27)]),
         ("自定义短语", vec![("打开短语文件", 12)]),
+        // v4.19.0：更新提醒。输入法本体不联网；联网检查由独立程序 pangyi-updater 完成。
+        ("更新", vec![("检查更新", 28), ("自动", 29), ("关", 30)]),
     ]
 }
 
@@ -430,6 +435,7 @@ fn is_current(act: i32) -> bool {
         15..=17 => act == 15 + trmode(),
         23 | 24 => act == if english() { 23 } else { 24 },
         25 | 26 => act == if emoji() { 25 } else { 26 },
+        29 | 30 => act == if UPDATER_ON.load(Ordering::Relaxed) { 29 } else { 30 },
         _ => false,
     }
 }
@@ -964,15 +970,66 @@ fn apply(action: i32) {
                 }
             }
         }
+        28 => launch_updater("--manual"),
+        29 => {
+            launch_updater("--enable");
+            UPDATER_ON.store(true, Ordering::Relaxed);
+        }
+        30 => {
+            launch_updater("--disable");
+            UPDATER_ON.store(false, Ordering::Relaxed);
+        }
         _ => {}
     }
     save();
+}
+
+/// 启动更新程序。它和输入法 DLL 完全分开：只有它会联网，DLL 永远离线。
+/// --manual 会弹结果（有新版本/已是最新），--enable/--disable 只是静默改配置。
+fn launch_updater(arg: &str) {
+    const UPDATER: &str = r"C:\Program Files\Pangyi\pangyi-updater.exe";
+    let f = wide(UPDATER);
+    let a = wide(arg);
+    let op = wide("open");
+    let show = if arg == "--manual" { SW_SHOWNORMAL } else { SW_HIDE };
+    unsafe {
+        let rc = windows::Win32::UI::Shell::ShellExecuteW(
+            HWND(0),
+            PCWSTR(op.as_ptr()),
+            PCWSTR(f.as_ptr()),
+            PCWSTR(a.as_ptr()),
+            PCWSTR::null(),
+            show,
+        );
+        if rc.0 <= 32 {
+            let text = wide("没找到更新程序。请重新运行一次安装包。");
+            let title = wide("旁译更新");
+            let _ = MessageBoxW(
+                HWND(0),
+                PCWSTR(text.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+    }
+}
+
+/// 读 pangyi-updater 的配置：%LOCALAPPDATA%\Pangyi\updater.json 里的 enabled。
+fn load_updater_enabled() -> bool {
+    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
+    let path = format!("{base}\\Pangyi\\updater.json");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
+        .unwrap_or(true)
 }
 
 unsafe fn init() {
     if WND.0 != 0 {
         return;
     }
+    UPDATER_ON.store(load_updater_enabled(), Ordering::Relaxed);
     BG = CreateSolidBrush(palette(accent(), dark(crate::cand::is_dark())).canvas);
     let hinst = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
     let cls: Vec<u16> = "PangyiSettings\0".encode_utf16().collect();

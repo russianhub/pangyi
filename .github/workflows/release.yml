@@ -71,7 +71,15 @@ jobs:
       - name: 准备 llvm-mingw 20261020（msvcrt）
         run: ./.github/scripts/setup-llvm-mingw.ps1
 
-      - name: 测试并构建 DLL 与安装包
+      - name: 同步更新程序版本号到标签
+        run: |
+          $ver = $env:GITHUB_REF_NAME -replace '^v', ''
+          $toml = Get-Content updater/Cargo.toml -Raw
+          $toml = $toml -replace '(?m)^version = .*$', ('version = "' + $ver + '"')
+          Set-Content updater/Cargo.toml -Value $toml -NoNewline
+          Get-Content updater/Cargo.toml | Select-String '^version'
+
+      - name: 测试并构建 DLL、更新程序与安装包
         env:
           PANGYI_SUPABASE_URL: ${{ vars.PANGYI_SUPABASE_URL }}
           PANGYI_SUPABASE_PUBLISHABLE_KEY: ${{ vars.PANGYI_SUPABASE_PUBLISHABLE_KEY }}

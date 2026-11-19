@@ -142,7 +142,7 @@ function Invoke-Python {
 $payload = Join-Path $Repo "ime\payload"
 New-Item -ItemType Directory -Force -Path $payload | Out-Null
 $marker = [Text.Encoding]::ASCII.GetBytes("pangyi-ci-placeholder")
-foreach ($name in @("pangyi_ime.dll", "pangyi_ime-x86.dll", "pangyi.ico")) {
+foreach ($name in @("pangyi_ime.dll", "pangyi_ime-x86.dll", "pangyi.ico", "pangyi-updater.exe")) {
     [System.IO.File]::WriteAllBytes((Join-Path $payload $name), $marker)
 }
 
@@ -212,6 +212,15 @@ Invoke-Python @(
     (Join-Path $payload "pangyi.ico")
 )
 Assert-MinBytes (Join-Path $payload "pangyi.ico") 1000 "pangyi.ico"
+
+Write-Host "building updater"
+# 不带 --locked：发版时 release workflow 会先按标签同步 updater/Cargo.toml 的版本号，
+# 根包版本变了之后 lock 需要自动刷新；依赖本身仍由 lock 固定。
+cargo build --release --manifest-path updater/Cargo.toml
+$updater = Join-Path $Repo "updater\target\release\pangyi-updater.exe"
+Assert-MinBytes $updater 200000 "pangyi-updater.exe"
+Assert-Pe $updater 0x8664 "pangyi-updater.exe"
+Copy-Item $updater (Join-Path $payload "pangyi-updater.exe") -Force
 
 Write-Host "building setup installer"
 cargo build --release --bin setup --features account --locked --manifest-path ime/Cargo.toml

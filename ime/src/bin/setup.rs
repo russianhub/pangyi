@@ -19,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 const DLL64: &[u8] = include_bytes!("../../payload/pangyi_ime.dll");
 const DLL32: &[u8] = include_bytes!("../../payload/pangyi_ime-x86.dll");
 const ICO: &[u8] = include_bytes!("../../payload/pangyi.ico");
+const UPDATER: &[u8] = include_bytes!("../../payload/pangyi-updater.exe");
 const ACCOUNT_EXAMPLE: &[u8] = include_bytes!("../../../account/account.toml.example");
 const ACCOUNT_EXAMPLE_NAME: &str = "account.toml.example";
 
@@ -26,6 +27,9 @@ const DIR: &str = r"C:\Program Files\Pangyi";
 const DLL64_NAME: &str = "pangyi_ime.dll";
 const DLL32_NAME: &str = "pangyi_ime-x86.dll";
 const ICO_NAME: &str = "pangyi.ico";
+const UPDATER_NAME: &str = "pangyi-updater.exe";
+/// 开机自启注册表位置（当前用户，不需要管理员权限）
+const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const SETTINGS_NAME: &str = "pangyi-settings.exe";
 /// 单一入口程序名（安装 + 设置都在这一个 exe 里）
 const APP_NAME: &str = "pangyi.exe";
@@ -179,6 +183,27 @@ fn reg_del_tree(root: HKEY, sub: &str) {
     }
 }
 
+fn reg_del_value(root: HKEY, sub: &str, name: &str) {
+    unsafe {
+        let mut h = HKEY::default();
+        let sub_w = wide(sub);
+        if RegOpenKeyExW(
+            root,
+            PCWSTR(sub_w.as_ptr()),
+            0,
+            KEY_SET_VALUE | KEY_WOW64_64KEY,
+            &mut h,
+        )
+        .is_err()
+        {
+            return;
+        }
+        let name_w = wide(name);
+        let _ = RegDeleteValueW(h, PCWSTR(name_w.as_ptr()));
+        let _ = RegCloseKey(h);
+    }
+}
+
 fn icacls_grant(dir: &str) {
     // 给打包应用(UWP)读+执行权限，否则新版记事本这类应用加载不了输入法
     let mut cmd = std::process::Command::new("icacls.exe");
@@ -275,6 +300,7 @@ fn purge_old_versions(dir: &Path, keep: &[String]) {
         ICO_NAME,
         VERSION_FILE,
         ACCOUNT_EXAMPLE_NAME,
+        UPDATER_NAME,
         "account.toml",
     ];
     if let Ok(rd) = std::fs::read_dir(dir) {
@@ -379,6 +405,19 @@ fn install() {
     let _ = std::fs::write(&ico, ICO);
     // 示例里没有地址和密钥。真正的 account.toml 若已存在，不要覆盖。
     let _ = std::fs::write(dir.join(ACCOUNT_EXAMPLE_NAME), ACCOUNT_EXAMPLE);
+    // 更新提醒程序：登录时可能正跑着（检查只有几十秒，锁窗口很小），
+    // 写失败就稍等重试一次；再失败就保持旧版，下次升级会再试。
+    let _ = std::fs::write(dir.join(UPDATER_NAME), UPDATER).or_else(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::fs::write(dir.join(UPDATER_NAME), UPDATER)
+    });
+    // 开机自启（当前用户，不需要管理员权限），卸载时删除
+    reg_set(
+        HKEY_CURRENT_USER,
+        RUN_KEY,
+        "PangyiUpdater",
+        &format!("\"{}\\{}\" --silent", DIR, UPDATER_NAME),
+    );
     unsafe { shortcuts(); }
 
     let d64s = write_or_versioned(dir, DLL64_NAME, DLL64);
@@ -461,6 +500,7 @@ fn uninstall() {
     reg_del_tree(HKEY_LOCAL_MACHINE, &format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{CLSID_STR}"));
     reg_del_tree(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Pangyi");
     reg_del_tree(HKEY_CURRENT_USER, &format!("Software\\Classes\\CLSID\\{CLSID_STR}"));
+    reg_del_value(HKEY_CURRENT_USER, RUN_KEY, "PangyiUpdater");
     let _ = std::fs::remove_file(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\旁译 设置.lnk");
     let _ = std::fs::remove_file(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\旁译.lnk");
     let _ = std::fs::remove_file(r"C:\Users\Public\Desktop\旁译 设置.lnk");
@@ -468,7 +508,7 @@ fn uninstall() {
     if let Ok(profile) = std::env::var("USERPROFILE") {
         let _ = std::fs::remove_file(Path::new(&profile).join("Desktop").join(DESKTOP_APP));
     }
-    for f in [DLL64_NAME, DLL32_NAME, ICO_NAME, SETTINGS_NAME, "pangyi-setup.exe", APP_NAME, VERSION_FILE, ACCOUNT_EXAMPLE_NAME] {
+    for f in [DLL64_NAME, DLL32_NAME, ICO_NAME, SETTINGS_NAME, "pangyi-setup.exe", APP_NAME, VERSION_FILE, ACCOUNT_EXAMPLE_NAME, UPDATER_NAME] {
         let _ = std::fs::remove_file(dir.join(f));
     }
     let _ = std::fs::remove_dir(dir);
