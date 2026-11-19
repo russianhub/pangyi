@@ -9,40 +9,38 @@
 
 ## 组件关系
 
-| 文件 | 位置 | 作用 |
+| 组件 | 位置 | 作用 |
 | --- | --- | --- |
 | `updater/`（本目录） | pangyi 主仓库 | 更新程序源码，随 Release 一起构建并打进安装包 |
-| `tools/make_manifest.py` | pangyi 主仓库 | 发版时生成并签名 latest.json |
-| `.github/workflows/publish-manifest.yml` | pangyi 主仓库 | 点「发布 Release」后，把安装包和 latest.json 推到网站仓库 |
+| `docs/releases/<标签>.md` | pangyi 主仓库 | 发布说明（前 8 行会显示在更新弹窗里） |
+| `.github/workflows/pangyi-manifest.yml` | 网站仓库 russianhub/opensource-sites | 每小时查一次 pangyi 的最新正式 Release，有新版本就下载安装包、签名并推 `dist/latest.json` 和 `dist/download/`，网站随之自动更新 |
+| `.github/scripts/pangyi-make-manifest.py` | 网站仓库 | 生成并签名 latest.json |
 | `dist/pangyi-dl.js` | 网站仓库 | 网站下载按钮：从 latest.json 读版本/日期/SHA256 |
 
-## 一次性配置
+## 签名密钥（一次性）
 
-1. **签名密钥**（已生成过就跳过）：
-   ```
-   openssl genpkey -algorithm ed25519 -out pangyi-sign.pem
-   openssl pkey -in pangyi-sign.pem -pubout -outform DER | tail -c 32 | base64
-   ```
-   公钥填到 `src/main.rs` 的 `PUBLIC_KEY_B64`；私钥 `pangyi-sign.pem` **不要提交**，单独备份。
-   丢了就无法给老用户推送更新。
+```
+openssl genpkey -algorithm ed25519 -out pangyi-sign.pem
+openssl pkey -in pangyi-sign.pem -pubout -outform DER | tail -c 32 | base64
+```
 
-2. **GitHub Secrets**（pangyi 主仓库 → Settings → Secrets and variables → Actions）：
-   - `PANGYI_SIGN_KEY`：`pangyi-sign.pem` 全文
-   - `SITE_REPO_TOKEN`：fine-grained token，只授权网站仓库（russianhub/opensource-sites）Contents 读写
+- 公钥（第二条命令的输出）填到 `src/main.rs` 的 `PUBLIC_KEY_B64`。
+- 私钥 `pangyi-sign.pem` **不要提交**，单独备份；设成网站仓库的 Actions secret
+  `PANGYI_SIGN_KEY`（网站同步工作流用它签名）。丢了就无法给老用户推送更新。
 
 ## 发版流程
 
-1. 推 `v*` 标签 → CI 构建安装包和更新程序，创建**草稿** Release。
-   release workflow 会先把 `updater/Cargo.toml` 的版本号同步成标签（保证更新程序
-   报告的「当前版本」与输入法一致）。
-2. 在 Release 说明里写更新内容（每行一条，前 8 行会显示在更新弹窗里）。
-3. 点「发布」→ `publish-manifest.yml` 自动：下载安装包 → 算 SHA256 并签名 →
-   把 `pangyi-vX.Y.Z.exe`、`pangyi-latest.exe`、`latest.json` 推到网站仓库的
-   `dist/download/` 和 `dist/latest.json`（保留最近两个版本）→ 网站自动重新部署。
+1. 写 `docs/releases/<版本>.md` 并 bump 版本号（`ime/Cargo.toml`、`account/Cargo.toml`、
+   `updater/Cargo.toml` 以及两个 Cargo.lock 的根包条目）。
+2. 推 `v*` 标签 → CI 构建安装包和更新程序（release workflow 会把 updater 的版本号
+   同步成标签），创建**草稿** Release。
+3. 在 GitHub 上核对校验值后点「发布」。
+4. 其余自动完成：网站仓库的同步工作流（每小时，或手动 Run workflow）会把安装包和
+   签名清单推到 eyuxq.com，官网下载按钮更新，已安装用户下次登录收到提醒。
 
 ## 注意
 
 - 已安装的老版本没有更新程序，需要手动装一次带更新程序的版本。
 - 网站仓库每发一版会多约一个安装包大小的历史体积；如果仓库明显变大，把安装包
-  改放对象存储（如 Cloudflare R2），只需改 workflow 里的上传步骤和 `DOWNLOAD_BASE`。
+  改放对象存储（如 Cloudflare R2），只需改同步工作流里的上传步骤和 `DOWNLOAD_BASE`。
 - 官网文案：输入法本体完全离线；更新检查是独立组件，只请求版本信息，可在设置里关闭。
