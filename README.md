@@ -12,6 +12,8 @@
 
 账号是可选功能。输入法核心离线：不登录也能打字、用本机词库和表情包，输入法 DLL 不访问网络。只有从设置打开「旁译账号」并登录时，那个窗口才会联网。已发布的 v4.18.0 安装包还没有这个窗口。
 
+输入法本体（`pangyi_ime.dll`）完全离线，不联网。检查更新由独立的 `pangyi-updater.exe` 完成：自动检查只请求版本信息（`https://eyuxq.com/latest.json`），设置里的「更新」行可以随时关闭。只有你在更新弹窗里选择下载时，这个独立程序才会去取安装包。
+
 ## 先试这三个输入
 
 | 你想做什么 | 这样操作 |
@@ -123,7 +125,7 @@ cargo build --release --bin setup        # ime/target/release/setup.exe
 
 - 64 位：`cargo build --release --lib`。运行器默认是 MSVC 工具链，和本机 rustup 默认宿主上的 `cargo build --release` 一致，产物是 `pangyi_ime.dll`。
 - 32 位：下载 [llvm-mingw 20261020](https://github.com/mstorsjo/llvm-mingw/releases/tag/20261020) 的 msvcrt、x86_64 压缩包，核对 SHA256 后解到 `tools/llvm-mingw`（该目录已 gitignore）。用其中的 `i686-w64-mingw32-gcc` 把 `ime/build/x86-stub.c` 编成 `x86-stub.o`，再以 `i686-pc-windows-gnu`、`-C link-self-contained=no`、`+crt-static` 链出 32 位 DLL。
-- `cargo test --locked`（`ime` 这个包，含各个 bin 的编译）。`dict.tsv`、`lm.tsv` 直接在 Git 里，不是 Git LFS；checkout 用默认设置即可。
+- `cargo test --locked`（`ime` 这个包，含各个 bin 的编译），以及 `cargo test --locked --manifest-path updater/Cargo.toml`。`dict.tsv`、`lm.tsv` 直接在 Git 里，不是 Git LFS；checkout 用默认设置即可。
 - 用 `tools/make_ico.py` 从 `ime/build/icon/icon-*.png` 生成 `pangyi.ico`，把两个 DLL 放进 `ime/payload/`，再 `cargo build --release --bin setup`，确认安装包能编过。这一步只在 CI 里验证，不上传文件。
 
 32 位链接在工具链目录里补两样东西，不改仓库里的源文件，也不提交生成的对象：
@@ -140,10 +142,11 @@ Cargo 注册表和 `ime/target` 走 Actions 缓存；llvm-mingw 另有一份缓�
 
 把草稿 Release 点「发布」后，网站仓库（russianhub/opensource-sites）的
 `pangyi-manifest` 同步工作流（每小时，或手动触发）会下载安装包、计算 SHA256 并用
-ed25519 签名，把 `latest.json` 放进网站发布目录并重新部署：eyuxq.com 上的下载按钮
-随之更新（直链指向 GitHub Release 的 CDN，安装包不进网站仓库），已安装用户下次
-登录会收到更新提醒。
-详见 [updater/README.md](updater/README.md)。
+ed25519 签名，把 `latest.json` 放进网站发布目录并重新部署。清单的主下载地址约定为
+Cloudflare R2 直链 `https://download.eyuxq.com/pangyi-v<版本>.exe`（`url`），
+GitHub Release 直链写在 `mirrors` 里兜底；安装包不进网站仓库。eyuxq.com 上的下载按钮
+读这份清单，已安装用户下次登录会收到更新提醒。输入法 DLL 不参与这次请求。
+网站仓库要配的 Secrets，以及工作流还没改到 R2 时的现状，见 [updater/README.md](updater/README.md)。
 
 ## 许可
 
