@@ -1,6 +1,8 @@
 # 推送 v* 标签时构建安装包，计算 SHA256，上传到草稿 Release。
-# 版本号不写在这个文件里：二进制里的版本来自 ime/Cargo.toml 的
+# 版本号不写在这个文件里：安装包里的版本来自 ime/Cargo.toml 的
 # CARGO_PKG_VERSION，安装包文件名来自标签（v4.18.0 → pangyi-v4.18.0.exe）。
+# 推标签时把 updater/Cargo.toml，以及 settings/Cargo.toml 和它的 lock，
+# 同步成同一个版本号。不改已经存在的标签或 Release。
 # 说明正文用 docs/releases/<标签>.md，例如 v4.18.0 → docs/releases/v4.18.0.md。
 # 不公开发布。标签已有 Release（含草稿）时失败，不覆盖已有附件。
 # 只用 Actions 自带的 GITHUB_TOKEN，不需要仓库 secret。
@@ -71,13 +73,14 @@ jobs:
       - name: 准备 llvm-mingw 20261020（msvcrt）
         run: ./.github/scripts/setup-llvm-mingw.ps1
 
-      - name: 同步更新程序版本号到标签
+      - name: 同步更新程序和设置程序版本号到标签
         run: |
           $ver = $env:GITHUB_REF_NAME -replace '^v', ''
           $toml = Get-Content updater/Cargo.toml -Raw
           $toml = $toml -replace '(?m)^version = .*$', ('version = "' + $ver + '"')
           Set-Content updater/Cargo.toml -Value $toml -NoNewline
           Get-Content updater/Cargo.toml | Select-String '^version'
+          ./.github/scripts/sync-settings-version.ps1 -Version $ver
 
       - name: 测试并构建 DLL、更新程序与安装包
         env:

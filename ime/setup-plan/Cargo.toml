@@ -1,0 +1,13 @@
+[workspace]
+# 独立 crate，只为了在 Linux 上 cargo test 入口分流。不参与 ime 的构建，也没有第三方依赖。
+
+[package]
+name = "pangyi-setup-plan"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "pangyi.exe 入口分流的纯逻辑测试包。不是产品版本，发版脚本不要改这里。"
+
+[lib]
+name = "pangyi_setup_plan"
+path = "../src/bin/setup_plan.rs"

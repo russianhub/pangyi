@@ -1,6 +1,9 @@
-//! 旁译 安装程序 / 卸载程序（单个 exe，自带组件）
+//! 旁译安装程序，也是桌面上的「旁译.exe」。
 //!
-//! 双击 = 安装（自动请求管理员权限）；`pangyi-setup.exe --uninstall` = 卸载。
+//! 无参数：已经装的是当前版本，就启动 `pangyi-settings.exe`；否则安装。
+//! `--account` 打开账号窗口。`--uninstall` 卸载。`--install` 强制重装。
+//! `--legacy-settings` 打开旧的 GDI 设置面板。
+//! 设置程序不在，或启动失败时，也会退回旧面板。
 //! 装完会出现在「设置 → 应用」里。
 #![windows_subsystem = "windows"]
 #![allow(non_snake_case)]
@@ -13,30 +16,36 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 
 #[path = "setup/auth.rs"]
 mod auth;
+#[path = "setup_plan.rs"]
+mod plan;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-// 组件直接打进安装程序里（构建前由脚本放到 ime/payload/）
+// 组件直接打进安装程序里（构建前由脚本放到 ime/payload/）。
+// 设置程序和更新程序一样嵌进来，安装时写到安装目录，不单独再发一个下载文件。
+// 设计说明在 GPLv3 小节里建议不要嵌，以免安装包本身变成 GPL 程序。
+// 本仓库按免版税协议使用 Slint，更新程序也只下载并运行这一个安装包。
 const DLL64: &[u8] = include_bytes!("../../payload/pangyi_ime.dll");
 const DLL32: &[u8] = include_bytes!("../../payload/pangyi_ime-x86.dll");
 const ICO: &[u8] = include_bytes!("../../payload/pangyi.ico");
 const UPDATER: &[u8] = include_bytes!("../../payload/pangyi-updater.exe");
+const SETTINGS_EXE: &[u8] = include_bytes!("../../payload/pangyi-settings.exe");
 const ACCOUNT_EXAMPLE: &[u8] = include_bytes!("../../../account/account.toml.example");
-const ACCOUNT_EXAMPLE_NAME: &str = "account.toml.example";
+const ACCOUNT_EXAMPLE_NAME: &str = plan::ACCOUNT_EXAMPLE_NAME;
 
-const DIR: &str = r"C:\Program Files\Pangyi";
-const DLL64_NAME: &str = "pangyi_ime.dll";
-const DLL32_NAME: &str = "pangyi_ime-x86.dll";
-const ICO_NAME: &str = "pangyi.ico";
-const UPDATER_NAME: &str = "pangyi-updater.exe";
+const DIR: &str = plan::INSTALL_DIR;
+const DLL64_NAME: &str = plan::DLL64_NAME;
+const DLL32_NAME: &str = plan::DLL32_NAME;
+const ICO_NAME: &str = plan::ICO_NAME;
+const UPDATER_NAME: &str = plan::UPDATER_NAME;
 /// 开机自启注册表位置（当前用户，不需要管理员权限）
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const SETTINGS_NAME: &str = "pangyi-settings.exe";
-/// 单一入口程序名（安装 + 设置都在这一个 exe 里）
-const APP_NAME: &str = "pangyi.exe";
-/// 桌面上的那个软件名
-const DESKTOP_APP: &str = "旁译.exe";
+const SETTINGS_NAME: &str = plan::SETTINGS_NAME;
+/// 安装、卸载、账号窗口仍是这个 exe。日常设置改由 pangyi-settings.exe 打开。
+const APP_NAME: &str = plan::APP_NAME;
+/// 桌面上的那个软件名。文件内容仍是本 exe 的副本，无参时再去启动设置程序。
+const DESKTOP_APP: &str = plan::DESKTOP_APP;
 /// 版本标记：装完后写进安装目录，用来判断"已经是当前版本了"
-const VERSION_FILE: &str = "version.txt";
+const VERSION_FILE: &str = plan::VERSION_FILE;
 const CLSID_STR: &str = "{B4E8F2A1-7C3D-4E5F-9A21-8D6C4B3E1F07}";
 const PROFILE_STR: &str = "{5A7C9E12-3D4B-4F8A-B6E1-2C9D7A5E8F34}";
 const CLSID: GUID = GUID::from_u128(0xB4E8F2A1_7C3D_4E5F_9A21_8D6C4B3E1F07);
@@ -79,10 +88,10 @@ unsafe fn elevated() -> bool {
     }
 }
 
-unsafe fn relaunch_elevated(uninstall: bool) {
+unsafe fn relaunch_elevated(extra_args: &str) {
     let exe = std::env::current_exe().unwrap_or_default();
     let exe_w = wide(&exe.to_string_lossy());
-    let args = if uninstall { wide("--uninstall") } else { wide("") };
+    let args = wide(extra_args);
     let verb = wide("runas");
     ShellExecuteW(
         HWND(0),
@@ -234,14 +243,10 @@ unsafe fn make_shortcut(lnk: &str, target: &str, workdir: &str) {
 }
 
 unsafe fn shortcuts() {
-    // 开始菜单只留【一个】入口，指向那个单一软件
-    let app = format!("{DIR}\\{APP_NAME}");
-    let _ = std::fs::remove_file(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\旁译 设置.lnk");
-    make_shortcut(
-        r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\旁译.lnk",
-        &app,
-        DIR,
-    );
+    // 开始菜单只留【一个】入口，直接打开设置程序。
+    // 旧的「旁译 设置.lnk」不再创建。账号和卸载仍走 pangyi.exe 的参数。
+    let _ = std::fs::remove_file(plan::LEGACY_SETTINGS_LINK);
+    make_shortcut(plan::START_MENU_LINK, &plan::start_menu_target(), DIR);
 }
 
 /// 写组件；如果目标文件被正在运行的程序占用，就换个带时间戳的名字写，
@@ -291,43 +296,27 @@ fn purge_old_versions(dir: &Path, keep: &[String]) {
         keep.iter().any(|k| k.eq_ignore_ascii_case(&s))
     };
 
-    // 1) 安装目录：只留这一轮注册的那两个 DLL，外加"那一个软件"
-    //    （旧的 pangyi-settings.exe / pangyi-setup.exe 现在都并进单一软件了，要删掉）
-    let keep_names = [
-        DLL64_NAME,
-        DLL32_NAME,
-        APP_NAME,
-        ICO_NAME,
-        VERSION_FILE,
-        ACCOUNT_EXAMPLE_NAME,
-        UPDATER_NAME,
-        "account.toml",
-    ];
+    // 1) 安装目录：只留这一轮注册的 DLL、pangyi.exe、更新程序，以及新的设置程序。
+    //    pangyi-setup.exe 这类旧 exe 仍然删掉。pangyi-settings.exe 在保留名单里。
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
             let low = name.to_ascii_lowercase();
             let is_old_dll = low.starts_with("pangyi_ime") && low.ends_with(".dll") && !is_keep(&e.path());
-            let is_obsolete = keep_names.iter().all(|k| !k.eq_ignore_ascii_case(&name))
-                && (low.ends_with(".exe") || name.starts_with("旁译"));
-            if is_old_dll || is_obsolete {
+            if is_old_dll || plan::is_obsolete_install_file(&name) {
                 remove_or_schedule(&e.path());
             }
         }
     }
 
-    // 2) 用户目录：现在已经是系统级安装，这些副本一个都不该留
+    // 2) 用户目录：系统级安装之后，早期用户级副本不留。
+    //    这里的 pangyi-settings.exe 是旧的用户目录副本，不是 Program Files 里的新程序。
     if let Ok(base) = std::env::var("LOCALAPPDATA") {
         let user_dir = Path::new(&base).join("Pangyi");
         if let Ok(rd) = std::fs::read_dir(&user_dir) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
-                let low = name.to_ascii_lowercase();
-                let stale = (low.starts_with("pangyi_ime") && low.ends_with(".dll"))
-                    || low == "pangyi-settings.exe"
-                    || low.ends_with(".log")
-                    || legacy_desktop_names().iter().any(|k| *k == name);
-                if stale {
+                if plan::is_stale_user_file(&name) {
                     remove_or_schedule(&e.path());
                 }
             }
@@ -347,19 +336,14 @@ fn purge_old_versions(dir: &Path, keep: &[String]) {
 /// ⚠️ 绝不能用「旁译」前缀匹配清桌面：用户桌面上可能有「旁译-对话存档」这种
 /// 以旁译开头的目录或文件，前缀匹配会误删（对目录还会排队"重启后删除"）。
 fn legacy_desktop_names() -> [&'static str; 5] {
-    [
-        DESKTOP_APP, // 上一版的那个软件，重新复制前先删掉
-        "旁译 设置.lnk",
-        "旁译 · 中俄输入.lnk",
-        "旁译设置.exe",
-        "旁译安装.exe",
-    ]
+    plan::legacy_desktop_names()
 }
 
 /// 把"旁译"做成【桌面上的一个软件】。
 ///
-/// 做法：先清掉桌面/公共桌面上清单里的旧旁译文件（安装包、设置程序、旧快捷方式），
-/// 再只放一个「旁译.exe」。以后每次升级也走这里，所以桌面上永远只有一个。
+/// 做法：先清掉桌面/公共桌面上清单里的旧旁译文件（安装包、旧快捷方式），
+/// 再只放一个「旁译.exe」。这份文件是 pangyi.exe 的副本：版本一致时启动设置程序，
+/// 版本不同时走安装。桌面上不另放 pangyi-settings.exe。
 fn place_single_app() {
     let me = std::env::current_exe().ok();
 
@@ -410,6 +394,11 @@ fn install() {
     let _ = std::fs::write(dir.join(UPDATER_NAME), UPDATER).or_else(|_| {
         std::thread::sleep(std::time::Duration::from_millis(500));
         std::fs::write(dir.join(UPDATER_NAME), UPDATER)
+    });
+    // 设置程序写在清旧文件之前。清旧文件会保留这个名字，不再把它当残余删掉。
+    let _ = std::fs::write(dir.join(SETTINGS_NAME), SETTINGS_EXE).or_else(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::fs::write(dir.join(SETTINGS_NAME), SETTINGS_EXE)
     });
     // 开机自启（当前用户，不需要管理员权限），卸载时删除
     reg_set(
@@ -488,7 +477,7 @@ fn install() {
 
     msg(
         "旁译 安装完成",
-        "旁译已安装。\n\n下一步：注销后重新登录（或重启一次），然后在任意程序里按 Win+空格 切到「旁译」即可。\n\n设置：双击桌面上的「旁译」，或运行 C:\\Program Files\\Pangyi\\pangyi.exe",
+        "旁译已安装。\n\n下一步：注销后重新登录（或重启一次），然后在任意程序里按 Win+空格 切到「旁译」即可。\n\n设置：双击桌面上的「旁译」，开始菜单里的「旁译」，或运行 C:\\Program Files\\Pangyi\\pangyi-settings.exe",
     );
 }
 
@@ -501,14 +490,14 @@ fn uninstall() {
     reg_del_tree(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Pangyi");
     reg_del_tree(HKEY_CURRENT_USER, &format!("Software\\Classes\\CLSID\\{CLSID_STR}"));
     reg_del_value(HKEY_CURRENT_USER, RUN_KEY, "PangyiUpdater");
-    let _ = std::fs::remove_file(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\旁译 设置.lnk");
-    let _ = std::fs::remove_file(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\旁译.lnk");
-    let _ = std::fs::remove_file(r"C:\Users\Public\Desktop\旁译 设置.lnk");
+    for link in plan::uninstall_links() {
+        let _ = std::fs::remove_file(link);
+    }
     // 桌面上的那个软件也删掉
     if let Ok(profile) = std::env::var("USERPROFILE") {
         let _ = std::fs::remove_file(Path::new(&profile).join("Desktop").join(DESKTOP_APP));
     }
-    for f in [DLL64_NAME, DLL32_NAME, ICO_NAME, SETTINGS_NAME, "pangyi-setup.exe", APP_NAME, VERSION_FILE, ACCOUNT_EXAMPLE_NAME, UPDATER_NAME] {
+    for f in plan::uninstall_install_dir_files() {
         let _ = std::fs::remove_file(dir.join(f));
     }
     let _ = std::fs::remove_dir(dir);
@@ -518,16 +507,18 @@ fn uninstall() {
 /// 已经装好了吗？（安装目录里有 version.txt 且版本号与当前 exe 一致）
 fn installed_current() -> bool {
     let dir = Path::new(DIR);
-    let v = match std::fs::read_to_string(dir.join(VERSION_FILE)) {
-        Ok(v) => v,
-        Err(_) => return false,
+    let Ok(text) = std::fs::read_to_string(dir.join(VERSION_FILE)) else {
+        return false;
     };
-    v.trim() == env!("CARGO_PKG_VERSION") && dir.join(DLL64_NAME).is_file()
+    plan::version_matches(
+        &text,
+        env!("CARGO_PKG_VERSION"),
+        dir.join(DLL64_NAME).is_file(),
+    )
 }
 
-/// 打开设置窗口（不需要管理员权限）。
-/// 这就是"那一个软件"的日常用途 —— 双击就开设置。
-unsafe fn open_settings() -> ! {
+/// 旧 GDI 设置面板。桌面、开始菜单和安装结束都不再把它当作用户入口。
+unsafe fn open_legacy_settings() -> ! {
     pangyi_ime::settings::load();
     pangyi_ime::settings::open_app();
     let mut msg = MSG::default();
@@ -538,33 +529,45 @@ unsafe fn open_settings() -> ! {
     std::process::exit(0);
 }
 
+fn try_spawn_settings() -> bool {
+    let path = plan::settings_exe_path();
+    let present = Path::new(&path).is_file();
+    let spawned = present && std::process::Command::new(&path).spawn().is_ok();
+    !plan::use_legacy_settings(present, spawned)
+}
+
+unsafe fn open_settings_or_legacy() -> ! {
+    if try_spawn_settings() {
+        std::process::exit(0);
+    }
+    msg(
+        "旁译设置",
+        "没能打开 pangyi-settings.exe。先打开原来的设置窗口。\n\n可以重新运行一次安装包，把设置程序装回去。",
+    );
+    open_legacy_settings()
+}
+
 fn main() {
     unsafe {
         let args: Vec<String> = std::env::args().collect();
-        let do_uninstall = args.iter().any(|a| a == "--uninstall");
-        let force_install = args.iter().any(|a| a == "--install");
-        let open_account = args.iter().any(|a| a == "--account");
-
-        if open_account {
-            auth::open_account_window();
-            return;
+        let entry = plan::route(&args, installed_current());
+        // 提权重新启动时带上 --install / --uninstall，避免 UAC 之后把强制重装丢掉。
+        if let Some(arg) = plan::elevation_arg(entry) {
+            if !elevated() {
+                relaunch_elevated(arg);
+                return;
+            }
         }
-
-        // 已经是最新版 → 直接开设置窗口（不需要 UAC）
-        if !do_uninstall && !force_install && installed_current() {
-            open_settings();
-        }
-
-        if !elevated() {
-            relaunch_elevated(do_uninstall);
-            return;
-        }
-        if do_uninstall {
-            uninstall();
-        } else {
-            install();
-            // 装完顺手把设置窗口打开，用户点一次就什么都齐了
-            open_settings();
+        match entry {
+            plan::Entry::Account => auth::open_account_window(),
+            plan::Entry::LegacySettings => open_legacy_settings(),
+            plan::Entry::OpenSettings => open_settings_or_legacy(),
+            plan::Entry::Uninstall => uninstall(),
+            plan::Entry::Install => {
+                install();
+                // 装完打开新的设置窗口。文件没写上时退回旧面板。
+                open_settings_or_legacy();
+            }
         }
     }
 }
