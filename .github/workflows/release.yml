@@ -79,7 +79,18 @@ jobs:
           $toml = Get-Content updater/Cargo.toml -Raw
           $toml = $toml -replace '(?m)^version = .*$', ('version = "' + $ver + '"')
           Set-Content updater/Cargo.toml -Value $toml -NoNewline
+          # build-windows.ps1 会 cargo test --locked。只改 lock 里根包版本，依赖版本不动。
+          $lockPath = "updater/Cargo.lock"
+          $lock = Get-Content $lockPath -Raw
+          $m = [regex]::Match($lock, '(?m)^name = "pangyi-updater"\r?\nversion = "[^"]+"')
+          if (-not $m.Success) { throw "updater/Cargo.lock has no pangyi-updater version" }
+          $replacement = $m.Value -replace 'version = "[^"]+"', ('version = "' + $ver + '"')
+          if ($replacement -ne $m.Value) {
+            $updated = $lock.Remove($m.Index, $m.Length).Insert($m.Index, $replacement)
+            Set-Content $lockPath -Value $updated -NoNewline
+          }
           Get-Content updater/Cargo.toml | Select-String '^version'
+          Select-String -Path $lockPath -Pattern 'name = "pangyi-updater"' -Context 0,1
           ./.github/scripts/sync-settings-version.ps1 -Version $ver
 
       - name: 测试并构建 DLL、更新程序与安装包

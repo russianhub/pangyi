@@ -172,6 +172,10 @@ cargo test --locked --manifest-path account/Cargo.toml
 Write-Host "entry routing tests"
 cargo test --locked --manifest-path ime/setup-plan/Cargo.toml
 cargo test --locked --features account --manifest-path ime/Cargo.toml
+Write-Host "updater tests"
+# 依赖以 updater/Cargo.lock 为准。发版工作流在调用本脚本前会把 Cargo.toml
+# 和 lock 里的根包版本一起改成标签；这里不再 cargo update。
+cargo test --locked --manifest-path updater/Cargo.toml
 
 # DLL 构建时不要留着占位图标，让 build.rs 走「图标不存在就跳过」那条路。
 Remove-Item -Recurse -Force $payload
