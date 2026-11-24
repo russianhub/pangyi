@@ -222,6 +222,17 @@ Assert-MinBytes $updater 200000 "pangyi-updater.exe"
 Assert-Pe $updater 0x8664 "pangyi-updater.exe"
 Copy-Item $updater (Join-Path $payload "pangyi-updater.exe") -Force
 
+Write-Host "testing settings"
+cargo test --locked --manifest-path settings/Cargo.toml
+
+Write-Host "building pangyi-settings"
+cargo build --release --locked --manifest-path settings/Cargo.toml
+$settingsExe = Join-Path $Repo "settings\target\release\pangyi-settings.exe"
+Assert-Pe $settingsExe 0x8664 "pangyi-settings.exe"
+$settingsBytes = (Get-Item $settingsExe).Length
+$settingsMb = $settingsBytes / 1MB
+Write-Host ("pangyi-settings.exe size={0} bytes ({1:0.00} MB)" -f $settingsBytes, $settingsMb)
+
 Write-Host "building setup installer"
 cargo build --release --bin setup --features account --locked --manifest-path ime/Cargo.toml
 $setup = Join-Path $Repo "ime\target\release\setup.exe"
@@ -241,5 +252,6 @@ if ($env:GITHUB_STEP_SUMMARY) {
 | pangyi_ime.dll (x64) | $x64n |
 | pangyi_ime.dll (i686) | $x86n |
 | setup.exe | $setupn |
+| pangyi-settings.exe (x64) | $settingsBytes |
 "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 }

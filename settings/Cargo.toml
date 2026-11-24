@@ -1,0 +1,36 @@
+[workspace]
+# 独立 crate，不参与 ime/ 的工作区，也不把输入法 DLL 卷进来。
+
+[package]
+name = "pangyi-settings"
+# 与 ime/Cargo.toml 对齐。发版脚本同步版本号放到步骤 3，这里先手写同一版本。
+version = "4.19.0"
+edition = "2021"
+description = "旁译设置程序（独立于输入法 DLL，不联网）"
+# 本包源码是 MIT。链接的 Slint 按 LicenseRef-Slint-Royalty-free-2.0 使用，关于页放 AboutSlint。
+license = "MIT"
+publish = false
+
+[dependencies]
+# 只读 updater.json 的 enabled。不把整份 JSON 再写回去。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 界面。default-features 关掉，避免把软件渲染器编进来当中文退路。
+# std / compat-1-2：Slint 语言与标准库。compat-1-2 不因此打开 linuxkms。
+# backend-winit + renderer-femtovg：窗口和 OpenGL 绘制。
+# accessibility：上游不建议关掉。
+slint = { version = "1.19", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-femtovg",
+    "accessibility",
+] }
+
+[build-dependencies]
+slint-build = "1.19"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

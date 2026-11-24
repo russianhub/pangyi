@@ -24,3 +24,4 @@ ime/src/*.bak*
 /outputs/
 /pangyi-setup.exe
 updater/target/
+settings/target/
