@@ -3,7 +3,8 @@
 
 [package]
 name = "pangyi-settings"
-# 与 ime/Cargo.toml 对齐。发版脚本同步版本号放到步骤 3，这里先手写同一版本。
+# 与 ime/Cargo.toml 对齐。推 v* 标签时，release workflow 会把这一行和
+# settings/Cargo.lock 里 pangyi-settings 的版本改成标签版本。
 version = "4.19.0"
 edition = "2021"
 description = "旁译设置程序（独立于输入法 DLL，不联网）"

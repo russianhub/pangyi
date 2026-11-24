@@ -31,9 +31,9 @@ openssl pkey -in pangyi-sign.pem -pubout -outform DER | tail -c 32 | base64
 ## 发版流程
 
 1. 写 `docs/releases/<版本>.md` 并 bump 版本号（`ime/Cargo.toml`、`account/Cargo.toml`、
-   `updater/Cargo.toml` 以及两个 Cargo.lock 的根包条目）。
-2. 推 `v*` 标签 → CI 构建安装包和更新程序（release workflow 会把 updater 的版本号
-   同步成标签），创建**草稿** Release。
+   `updater/Cargo.toml`、`settings/Cargo.toml`，以及对应 Cargo.lock 的根包条目）。
+2. 推 `v*` 标签 → CI 构建安装包、更新程序和设置程序（release workflow 会把 updater
+   与 settings 的版本号同步成标签），创建**草稿** Release。
 3. 在 GitHub 上核对校验值后点「发布」。
 4. 其余自动完成：网站仓库的同步工作流（每小时，或手动 Run workflow）会下载安装包、
    计算 SHA256 并签名，把 latest.json 推到 eyuxq.com 并重新部署，官网下载按钮更新，

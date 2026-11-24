@@ -4,9 +4,14 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      # 步骤 3 的 PR 基线不是 main。push 这条分支才会跑 Windows CI。合入 main 之后可以删掉。
+      - cursor/settings-entry-switch-fc06
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - cursor/pangyi-settings-exe-244a
 
 permissions:
   contents: read
