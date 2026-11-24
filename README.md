@@ -110,23 +110,26 @@ cd ime
 cargo build --release                    # 64 位 pangyi_ime.dll（cdylib）
 # 32 位 DLL：需要 tools/llvm-mingw，并把 build/x86-stub.c 编成 build/x86-stub.o
 # 再链进 i686-pc-windows-gnu（做法与 CI 相同，见下一节）
-# 安装包 exe：把两个 DLL、pangyi.ico 和 pangyi-updater.exe 放进 ime/payload/ 后
-cargo build --release --manifest-path updater/Cargo.toml   # updater/target/release/pangyi-updater.exe
-cargo build --release --bin setup        # ime/target/release/setup.exe
+# 安装包 exe：先编更新程序和设置程序，连同两个 DLL、pangyi.ico 放进 ime/payload/，再编 setup
+cargo build --release --manifest-path updater/Cargo.toml    # updater/target/release/pangyi-updater.exe
+cargo build --release --manifest-path settings/Cargo.toml   # settings/target/release/pangyi-settings.exe
+cargo build --release --bin setup                          # ime/target/release/setup.exe
 ```
 
-词库 `ime/src/dict.tsv` 以 `include_str!` 直接编进二进制，没有任何运行时数据文件依赖。`ime/payload/`（DLL 和图标）在 `.gitignore` 里，需要在打安装包之前自己放进去。图标可以用 `python tools/make_ico.py ime/build/icon ime/payload/pangyi.ico` 从 `ime/build/icon/icon-*.png` 生成。
+`setup.exe` 用 `include_bytes!` 把 `ime/payload/pangyi-settings.exe` 嵌进去，安装时写到 `C:\Program Files\Pangyi\pangyi-settings.exe`。所以要先编出设置程序，再编安装包。
+
+词库 `ime/src/dict.tsv` 以 `include_str!` 直接编进二进制，没有任何运行时数据文件依赖。`ime/payload/`（DLL、图标、更新程序和设置程序）在 `.gitignore` 里，需要在打安装包之前自己放进去。图标可以用 `python tools/make_ico.py ime/build/icon ime/payload/pangyi.ico` 从 `ime/build/icon/icon-*.png` 生成。
 
 ## 持续集成与发布
 
 [![持续集成](https://github.com/russianhub/pangyi/actions/workflows/ci.yml/badge.svg)](https://github.com/russianhub/pangyi/actions/workflows/ci.yml)
 
-`.github/workflows/ci.yml` 在推送到 `main`，以及指向 `main` 的拉取请求上运行，使用 `windows-latest`。
+`.github/workflows/ci.yml` 在推送到 `main`，以及指向 `main` 的拉取请求上运行，使用 `windows-latest`。设置程序入口这一支在合入 main 之前，push 到 `cursor/settings-entry-switch-fc06` 也会跑同一套构建。
 
 - 64 位：`cargo build --release --lib`。运行器默认是 MSVC 工具链，和本机 rustup 默认宿主上的 `cargo build --release` 一致，产物是 `pangyi_ime.dll`。
 - 32 位：下载 [llvm-mingw 20261020](https://github.com/mstorsjo/llvm-mingw/releases/tag/20261020) 的 msvcrt、x86_64 压缩包，核对 SHA256 后解到 `tools/llvm-mingw`（该目录已 gitignore）。用其中的 `i686-w64-mingw32-gcc` 把 `ime/build/x86-stub.c` 编成 `x86-stub.o`，再以 `i686-pc-windows-gnu`、`-C link-self-contained=no`、`+crt-static` 链出 32 位 DLL。
 - `cargo test --locked`（`ime` 这个包，含各个 bin 的编译），以及 `cargo test --locked --manifest-path updater/Cargo.toml`。`dict.tsv`、`lm.tsv` 直接在 Git 里，不是 Git LFS；checkout 用默认设置即可。
-- 用 `tools/make_ico.py` 从 `ime/build/icon/icon-*.png` 生成 `pangyi.ico`，把两个 DLL 放进 `ime/payload/`，再 `cargo build --release --bin setup`，确认安装包能编过。这一步只在 CI 里验证，不上传文件。
+- 用 `tools/make_ico.py` 从 `ime/build/icon/icon-*.png` 生成 `pangyi.ico`，把两个 DLL 放进 `ime/payload/`。64 位 `pangyi-settings.exe` 先编出来，复制进 `ime/payload/`，再 `cargo build --release --bin setup`。CI 会在日志里打印 `pangyi-settings.exe` 和 `setup.exe` 的字节数。这一步只在 CI 里验证，不上传文件。
 
 32 位链接在工具链目录里补两样东西，不改仓库里的源文件，也不提交生成的对象：
 
@@ -137,8 +140,8 @@ cargo build --release --bin setup        # ime/target/release/setup.exe
 
 Cargo 注册表和 `ime/target` 走 Actions 缓存；llvm-mingw 另有一份缓存。
 
-`.github/workflows/release.yml` 在推送 `v*` 标签（例如 `v4.18.0`）时跑同一套构建，把安装包命名为 `pangyi-<标签>.exe`，并写一个 `sha256sum -c` 能用的 `.sha256` 文件。然后用 `gh release create --draft` 把这两个文件上传到该标签的草稿 Release。说明正文用 `docs/releases/<标签>.md`（`v4.18.0` 就是 `docs/releases/v4.18.0.md`）；没有这个文件，工作流失败，不创建 Release。草稿要人在 GitHub 上核对校验值后再公开。这个标签如果已经有 Release（含草稿），工作流会失败并留下原来的附件。用的是 Actions 自带的 `GITHUB_TOKEN`，不用另配 secret。权限是 `contents: write`（创建 Release）和 `actions: write`（写缓存）。版本号不写在工作流里：安装包里的版本来自 `ime/Cargo.toml`；release workflow 会把
-`updater/Cargo.toml` 的版本号同步成标签后一起构建更新程序。
+`.github/workflows/release.yml` 在推送 `v*` 标签（例如 `v4.18.0`）时跑同一套构建，把安装包命名为 `pangyi-<标签>.exe`，并写一个 `sha256sum -c` 能用的 `.sha256` 文件。然后用 `gh release create --draft` 把这两个文件上传到该标签的草稿 Release。说明正文用 `docs/releases/<标签>.md`（`v4.18.0` 就是 `docs/releases/v4.18.0.md`）；没有这个文件，工作流失败，不创建 Release。草稿要人在 GitHub 上核对校验值后再公开。这个标签如果已经有 Release（含草稿），工作流会失败并留下原来的附件。用的是 Actions 自带的 `GITHUB_TOKEN`，不用另配 secret。权限是 `contents: write`（创建 Release）和 `actions: write`（写缓存）。版本号不写在工作流里：安装包里的版本来自 `ime/Cargo.toml`。release workflow 会把
+`updater/Cargo.toml` 和 `updater/Cargo.lock` 里 `pangyi-updater` 的版本号，以及 `settings/Cargo.toml` 和 `settings/Cargo.lock` 里 `pangyi-settings` 的版本号，同步成标签后再构建。已经存在的标签和 Release 不会被改写。
 
 把草稿 Release 点「发布」后，网站仓库（russianhub/opensource-sites）的
 `pangyi-manifest` 同步工作流（每小时，或手动触发）会下载安装包、计算 SHA256 并用
@@ -150,6 +153,7 @@ GitHub Release 直链写在 `mirrors` 里兜底；安装包不进网站仓库。
 
 ## 许可
 
-- 代码：MIT（见 [LICENSE](LICENSE)）
+- 代码：MIT（见 [LICENSE](LICENSE)）。`pangyi-settings.exe` 的源码同样是 MIT。
+- 设置程序链接的 Slint 按免版税协议 LicenseRef-Slint-Royalty-free-2.0 使用。Slint 1.19 的许可证是 GPLv3、免版税协议、商业许可三选一，本仓库选免版税这一条。关于页放有 “Made with Slint” 署名。输入法 DLL 按 MIT 分发。安装时设置程序写到 `C:\Program Files\Pangyi\pangyi-settings.exe`。
 - 数据：CC BY-SA 系列 —— 分发时必须保留 [NOTICE.md](NOTICE.md) 并以相同方式共享。生成步骤见 [数据流水线](docs/data-pipeline.md)，常用词释义抽查见 [释义抽查](docs/gloss-audit.md)。手写覆盖表 `data/gloss-overrides.tsv` 是原创，同样按 CC BY-SA 随数据分发
 - 用户自己写的 `user-dict.tsv` / `user-gloss.tsv` 只在用户电脑上，不随安装包分发，也不纳入上面的 CC BY-SA 数据

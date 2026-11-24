@@ -4,6 +4,7 @@ data/raw/
 __pycache__/
 *.pyc
 ime/target/
+ime/setup-plan/target/
 account/target/
 dist/
 tools/llvm-mingw/
@@ -24,3 +25,4 @@ ime/src/*.bak*
 /outputs/
 /pangyi-setup.exe
 updater/target/
+settings/target/

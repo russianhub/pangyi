@@ -138,17 +138,39 @@ function Invoke-Python {
     }
 }
 
+function Assert-FileContains {
+    param([string]$Outer, [string]$Inner, [string]$Label)
+    # setup.exe 用 include_bytes! 嵌进设置程序。整份文件都应出现在安装包字节里。
+    $py = @"
+import pathlib, sys
+outer = pathlib.Path(sys.argv[1]).read_bytes()
+inner = pathlib.Path(sys.argv[2]).read_bytes()
+sys.exit(0 if inner and inner in outer else 1)
+"@
+    $tmpDir = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+    $tmp = Join-Path $tmpDir "pangyi-assert-embedded.py"
+    [System.IO.File]::WriteAllText($tmp, $py)
+    $prev = $PSNativeCommandUseErrorActionPreference
+    $PSNativeCommandUseErrorActionPreference = $false
+    Invoke-Python @($tmp, $Outer, $Inner)
+    $code = $LASTEXITCODE
+    $PSNativeCommandUseErrorActionPreference = $prev
+    if ($code -ne 0) { throw "$Label does not contain the embedded file bytes" }
+}
+
 # setup.rs 用 include_bytes! 引用 payload。测试只需要文件存在，不能把真正的 DLL 编进测试二进制。
 $payload = Join-Path $Repo "ime\payload"
 New-Item -ItemType Directory -Force -Path $payload | Out-Null
 $marker = [Text.Encoding]::ASCII.GetBytes("pangyi-ci-placeholder")
-foreach ($name in @("pangyi_ime.dll", "pangyi_ime-x86.dll", "pangyi.ico", "pangyi-updater.exe")) {
+foreach ($name in @("pangyi_ime.dll", "pangyi_ime-x86.dll", "pangyi.ico", "pangyi-updater.exe", "pangyi-settings.exe")) {
     [System.IO.File]::WriteAllBytes((Join-Path $payload $name), $marker)
 }
 
 Write-Host "rustc $(rustc --version)"
 Write-Host "account tests"
 cargo test --locked --manifest-path account/Cargo.toml
+Write-Host "entry routing tests"
+cargo test --locked --manifest-path ime/setup-plan/Cargo.toml
 cargo test --locked --features account --manifest-path ime/Cargo.toml
 Write-Host "updater tests"
 # 依赖以 updater/Cargo.lock 为准。发版工作流在调用本脚本前会把 Cargo.toml
@@ -226,24 +248,44 @@ Assert-MinBytes $updater 200000 "pangyi-updater.exe"
 Assert-Pe $updater 0x8664 "pangyi-updater.exe"
 Copy-Item $updater (Join-Path $payload "pangyi-updater.exe") -Force
 
+Write-Host "testing settings"
+cargo test --locked --manifest-path settings/Cargo.toml
+
+Write-Host "building pangyi-settings"
+cargo build --release --locked --manifest-path settings/Cargo.toml
+$settingsExe = Join-Path $Repo "settings\target\release\pangyi-settings.exe"
+Assert-Pe $settingsExe 0x8664 "pangyi-settings.exe"
+$settingsBytes = (Get-Item $settingsExe).Length
+$settingsMb = $settingsBytes / 1MB
+Write-Host ("pangyi-settings.exe size={0} bytes ({1:0.00} MB)" -f $settingsBytes, $settingsMb)
+# setup.rs 用 include_bytes! 引用这份文件，必须先于 setup.exe 放进 payload。
+Copy-Item $settingsExe (Join-Path $payload "pangyi-settings.exe") -Force
+Write-Host "copied pangyi-settings.exe into ime\payload before setup.exe"
+
 Write-Host "building setup installer"
 cargo build --release --bin setup --features account --locked --manifest-path ime/Cargo.toml
 $setup = Join-Path $Repo "ime\target\release\setup.exe"
 Assert-MinBytes $setup 40000000 "setup.exe"
 Assert-Pe $setup 0x8664 "setup.exe"
 Assert-Ascii $setup "/auth/v1"
+Assert-FileContains $setup $settingsExe "setup.exe / pangyi-settings.exe"
+$setupBytes = (Get-Item $setup).Length
+$setupMb = $setupBytes / 1MB
+Write-Host ("setup.exe size={0} bytes ({1:0.00} MB)" -f $setupBytes, $setupMb)
 
 if ($env:GITHUB_STEP_SUMMARY) {
     $x64n = (Get-Item $dll64).Length
     $x86n = (Get-Item $dll32).Length
-    $setupn = (Get-Item $setup).Length
+    $setupMbText = "{0:0.00}" -f $setupMb
+    $settingsMbText = "{0:0.00}" -f $settingsMb
     @"
 ### Windows build
 
-| artifact | bytes |
-| --- | ---: |
-| pangyi_ime.dll (x64) | $x64n |
-| pangyi_ime.dll (i686) | $x86n |
-| setup.exe | $setupn |
+| artifact | bytes | MB |
+| --- | ---: | ---: |
+| pangyi_ime.dll (x64) | $x64n | |
+| pangyi_ime.dll (i686) | $x86n | |
+| setup.exe | $setupBytes | $setupMbText |
+| pangyi-settings.exe (x64) | $settingsBytes | $settingsMbText |
 "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 }
