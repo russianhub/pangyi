@@ -9,9 +9,9 @@ use std::process::Command;
 use pangyi_settings::{
     accent_strong, data_dir, effective_dark, ensure_phrases_file, existing_file_or_dir,
     format_count, load_counts, load_dir, packs_dir, phrase_path, preview_palette, scaled_px,
-    scheme_kind, LocalCounts, OpenTarget, PreviewPalette, Rgb, SchemeKind, Settings, ACCOUNT_ARG,
-    ACCOUNT_EXE, ANNO_PX, INDEX_PX, MSG_NO_ACCOUNT, MSG_NO_UPDATER, TEXT_PX, UPDATER_DISABLE,
-    UPDATER_ENABLE, UPDATER_EXE, UPDATER_MANUAL,
+    scheme_kind, LocalCounts, OpenTarget, PreviewPalette, Rgb, SchemeKind, Settings, ACCENTS,
+    ACCOUNT_ARG, ACCOUNT_EXE, ANNO_PX, INDEX_PX, MSG_NO_ACCOUNT, MSG_NO_UPDATER, TEXT_PX,
+    UPDATER_DISABLE, UPDATER_ENABLE, UPDATER_EXE, UPDATER_MANUAL,
 };
 use slint::ComponentHandle;
 
@@ -323,6 +323,8 @@ fn push_settings(ui: &MainWindow, settings: &Settings, system_dark: bool) {
     ui.set_dot2(color(accent_strong(2, dark)));
     ui.set_dot3(color(accent_strong(3, dark)));
     ui.set_dot4(color(accent_strong(4, dark)));
+    let accent_pick = usize::try_from(settings.accent.clamp(0, 4)).unwrap_or(0);
+    ui.set_on_accent(color(ACCENTS[accent_pick][usize::from(dark)].on_strong));
 }
 
 fn push_preview(ui: &MainWindow, palette: &PreviewPalette, scale: i32, horizontal: bool) {

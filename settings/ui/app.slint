@@ -1,6 +1,6 @@
 // 旁译设置窗口。控件用 Fluent；候选预览用旁译自己的色，不把整窗染成强调色。
 // 默认字体用微软雅黑 UI，版本号用 Segoe UI Variable。中文不依赖软件渲染器的西文回落。
-import { AboutSlint, Button, Palette, Switch } from "std-widgets.slint";
+import { AboutSlint, Button, Palette } from "std-widgets.slint";
 
 export { Palette }
 
@@ -227,12 +227,23 @@ component Mascots inherits Rectangle {
     }
 }
 
+// 当前配色。由 MainWindow 在配色或深浅变化时同步。控件不再用系统蓝，而是跟着旁译的配色走。
+global Theme {
+    in-out property <color> accent: #2FB8CC;
+    in-out property <color> on-accent: #FFFFFF;
+    // 浅色下强调色上放白字，对比度不够，所以只在浅色时压深一点；深色用原色加深色字。
+    in-out property <bool> dark: false;
+    out property <color> fill: dark ? accent : accent.darker(0.22);
+    out property <color> muted: Palette.foreground.with-alpha(0.66);
+    out property <color> hairline: Palette.foreground.with-alpha(0.09);
+}
+
 component NavItem inherits Rectangle {
     in property <string> label;
     in property <bool> active;
     callback clicked();
     height: 40px;
-    border-radius: 8px;
+    border-radius: 6px;
     background: transparent;
 
     hit := TouchArea {
@@ -246,46 +257,87 @@ component NavItem inherits Rectangle {
 
     states [
         active when root.active: {
-            background: Palette.selection-background;
+            background: Palette.foreground.with-alpha(0.08);
         }
         hover when !root.active && hit.has-hover: {
-            background: Palette.control-background;
+            background: Palette.foreground.with-alpha(0.05);
         }
     ]
 
+    // Win11 导航的选中指示条。
+    Rectangle {
+        x: 0px;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: root.active ? 16px : 0px;
+        border-radius: 1.5px;
+        background: Theme.fill;
+        animate height { duration: 120ms; }
+    }
+
     Text {
-        x: 12px;
+        x: 16px;
         text: root.label;
         font-family: "Microsoft YaHei UI";
         font-size: 14px;
+        font-weight: root.active ? 600 : 400;
         vertical-alignment: center;
         height: 100%;
-        color: root.active ? Palette.selection-foreground : Palette.foreground;
+        color: Palette.foreground;
     }
 }
 
-component Card inherits Rectangle {
+component PageHeader inherits VerticalLayout {
     in property <string> title;
+    in property <string> subtitle;
+    spacing: 4px;
     vertical-stretch: 0;
-    background: Palette.control-background;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: Palette.border;
 
-    VerticalLayout {
-        padding: 16px;
-        spacing: 8px;
-        alignment: start;
+    Text {
+        text: root.title;
+        font-family: "Microsoft YaHei UI";
+        font-size: 24px;
+        font-weight: 600;
+        color: Palette.foreground;
+    }
 
-        Text {
-            text: root.title;
-            font-family: "Microsoft YaHei UI";
-            font-size: 13px;
-            font-weight: 600;
-            color: Palette.foreground;
+    Text {
+        text: root.subtitle;
+        font-family: "Microsoft YaHei UI";
+        font-size: 13px;
+        wrap: word-wrap;
+        color: Theme.muted;
+    }
+}
+
+// 分组：小标题在卡片外面，卡片里是一行一行的设置。
+component Card inherits VerticalLayout {
+    in property <string> title;
+    spacing: 8px;
+    vertical-stretch: 0;
+
+    Text {
+        text: root.title;
+        font-family: "Microsoft YaHei UI";
+        font-size: 13px;
+        font-weight: 600;
+        color: Theme.muted;
+    }
+
+    Rectangle {
+        background: Palette.control-background;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Palette.foreground.with-alpha(0.14);
+
+        VerticalLayout {
+            padding-top: 4px;
+            padding-bottom: 4px;
+            spacing: 0;
+            alignment: start;
+
+            @children
         }
-
-        @children
     }
 }
 
@@ -293,17 +345,75 @@ component Hint inherits Text {
     font-family: "Microsoft YaHei UI";
     font-size: 12px;
     wrap: word-wrap;
-    color: Palette.foreground.with-alpha(0.72);
+    color: Theme.muted;
 }
 
+// 一行设置：左边名称加一句说明，右边是控件。
 component Row inherits Rectangle {
     in property <string> label;
+    in property <string> desc;
+    in property <bool> divider: true;
     vertical-stretch: 0;
-    min-height: 32px;
+    min-height: 56px;
 
     HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 24px;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.label;
+                font-family: "Microsoft YaHei UI";
+                font-size: 14px;
+                color: Palette.foreground;
+                wrap: word-wrap;
+            }
+
+            if root.desc != "": Text {
+                text: root.desc;
+                font-family: "Microsoft YaHei UI";
+                font-size: 12px;
+                color: Theme.muted;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 0;
+            alignment: center;
+
+            @children
+        }
+    }
+
+    if root.divider: Rectangle {
+        x: 16px;
+        y: parent.height - 1px;
+        width: parent.width - 32px;
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
+// 只读的一行：左边名称，右边一个值。
+component ValueRow inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> divider: true;
+    vertical-stretch: 0;
+    min-height: 40px;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
         spacing: 16px;
-        alignment: space-between;
 
         Text {
             text: root.label;
@@ -313,7 +423,82 @@ component Row inherits Rectangle {
             vertical-alignment: center;
         }
 
-        @children
+        Text {
+            text: root.value;
+            font-family: "Microsoft YaHei UI";
+            font-size: 13px;
+            color: Theme.muted;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.divider: Rectangle {
+        x: 16px;
+        y: parent.height - 1px;
+        width: parent.width - 32px;
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
+// 开关：接口和原来的 Switch 一样（checked 加 toggled），颜色跟配色走。
+component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    callback toggled();
+    width: 84px;
+    height: 24px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    accessible-role: switch;
+    accessible-checked: root.checked;
+    accessible-label: root.checked ? "开" : "关";
+    accessible-action-default => {
+        root.checked = !root.checked;
+        root.toggled();
+    }
+
+    Text {
+        x: 0;
+        width: 44px;
+        text: root.checked ? "开" : "关";
+        font-family: "Microsoft YaHei UI";
+        font-size: 13px;
+        color: Palette.foreground;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        height: 100%;
+    }
+
+    track := Rectangle {
+        x: 52px;
+        width: 32px;
+        height: 16px;
+        y: (parent.height - self.height) / 2;
+        border-radius: 8px;
+        background: root.checked ? Theme.fill : transparent;
+        border-width: 1px;
+        border-color: root.checked ? Theme.fill : Palette.foreground.with-alpha(0.6);
+
+        Rectangle {
+            width: hit.pressed ? 14px : 10px;
+            height: 10px;
+            border-radius: 5px;
+            y: (parent.height - self.height) / 2 - 1px;
+            x: root.checked ? parent.width - self.width - 4px : 3px;
+            background: root.checked ? Theme.on-accent : Palette.foreground.with-alpha(0.72);
+            animate x { duration: 120ms; easing: ease-out; }
+        }
+    }
+
+    hit := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled();
+        }
     }
 }
 
@@ -323,10 +508,10 @@ component Segmented inherits Rectangle {
     callback selected(int);
     vertical-stretch: 0;
     horizontal-stretch: 0;
-    min-width: 240px;
+    min-width: 180px;
     height: 32px;
-    border-radius: 8px;
-    background: Palette.background;
+    border-radius: 6px;
+    background: Palette.foreground.with-alpha(0.05);
     border-width: 1px;
     border-color: Palette.border;
 
@@ -336,8 +521,8 @@ component Segmented inherits Rectangle {
 
         for label[index] in root.labels: Rectangle {
             horizontal-stretch: 1;
-            border-radius: 6px;
-            background: root.current == index ? Palette.accent-background : transparent;
+            border-radius: 4px;
+            background: root.current == index ? Theme.fill : transparent;
 
             TouchArea {
                 width: 100%;
@@ -352,11 +537,12 @@ component Segmented inherits Rectangle {
                 text: label;
                 font-family: "Microsoft YaHei UI";
                 font-size: 13px;
+                font-weight: root.current == index ? 600 : 400;
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 width: 100%;
                 height: 100%;
-                color: root.current == index ? Palette.accent-foreground : Palette.foreground;
+                color: root.current == index ? Theme.on-accent : Palette.foreground;
             }
         }
     }
@@ -370,11 +556,18 @@ component Dot inherits Rectangle {
     width: 28px;
     height: 28px;
     border-radius: 14px;
-    background: dot;
-    border-width: selected ? 3px : 1px;
-    border-color: selected ? Palette.foreground : Palette.border;
+    background: transparent;
+    border-width: selected ? 2px : 0px;
+    border-color: Palette.foreground;
     accessible-role: button;
     accessible-label: name;
+
+    Rectangle {
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        background: root.dot;
+    }
 
     TouchArea {
         width: 100%;
@@ -398,6 +591,7 @@ component CandPreview inherits Rectangle {
     in property <length> anno-px;
     in property <length> index-px;
     vertical-stretch: 0;
+    min-height: horizontal ? 64px : 132px;
     background: card;
     border-color: frame;
     border-width: 1px;
@@ -560,10 +754,10 @@ component CandPreview inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "旁译 设置  v" + version;
-    preferred-width: 820px;
-    preferred-height: 560px;
-    min-width: 720px;
-    min-height: 480px;
+    preferred-width: 900px;
+    preferred-height: 640px;
+    min-width: 760px;
+    min-height: 520px;
     default-font-family: "Microsoft YaHei UI";
     default-font-size: 14px;
     background: Palette.background;
@@ -584,6 +778,7 @@ export component MainWindow inherits Window {
     in-out property <int> trmode: 0;
     in-out property <bool> updater-on: true;
     in property <bool> mascot-dark: false;
+    in property <color> on-accent: #FFFFFF;
 
     in property <color> pv-card: #FFFFFF;
     in property <color> pv-border: #E3E6EA;
@@ -626,8 +821,41 @@ export component MainWindow inherits Window {
     callback updater-toggled(bool);
     callback request-close();
 
+    // 配色、深浅变化时，把当前强调色同步给所有控件。
+    function sync-accent() {
+        Theme.accent = root.accent-index == 1 ? root.dot1 : root.accent-index == 2 ? root.dot2 : root.accent-index == 3 ? root.dot3 : root.accent-index == 4 ? root.dot4 : root.dot0;
+        Theme.on-accent = root.on-accent;
+        Theme.dark = root.mascot-dark;
+    }
+
     init => {
         keys.focus();
+        root.sync-accent();
+    }
+
+    changed accent-index => {
+        root.sync-accent();
+    }
+    changed mascot-dark => {
+        root.sync-accent();
+    }
+    changed on-accent => {
+        root.sync-accent();
+    }
+    changed dot0 => {
+        root.sync-accent();
+    }
+    changed dot1 => {
+        root.sync-accent();
+    }
+    changed dot2 => {
+        root.sync-accent();
+    }
+    changed dot3 => {
+        root.sync-accent();
+    }
+    changed dot4 => {
+        root.sync-accent();
     }
 
     keys := FocusScope {
@@ -639,21 +867,24 @@ export component MainWindow inherits Window {
             reject
         }
     }
-
     HorizontalLayout {
         spacing: 0;
 
+        // 左侧导航
         Rectangle {
-            width: 208px;
+            width: 216px;
             background: Palette.alternate-background;
 
             VerticalLayout {
-                padding: 16px;
-                spacing: 8px;
+                padding: 12px;
+                padding-top: 20px;
+                spacing: 4px;
                 alignment: start;
 
                 HorizontalLayout {
-                    spacing: 8px;
+                    padding-left: 8px;
+                    padding-bottom: 16px;
+                    spacing: 12px;
                     alignment: start;
 
                     LogoMark { }
@@ -671,21 +902,16 @@ export component MainWindow inherits Window {
                         }
 
                         Text {
-                            text: "v" + root.version;
+                            text: "设置  v" + root.version;
                             font-family: "Segoe UI Variable";
                             font-size: 12px;
-                            color: Palette.foreground;
+                            color: Theme.muted;
                         }
                     }
                 }
 
-                Mascots {
-                    dark: root.mascot-dark;
-                    side: 32px;
-                }
-
                 NavItem {
-                    label: "常规";
+                    label: "输入";
                     active: root.page == 0;
                     clicked => {
                         root.page = 0;
@@ -718,7 +944,7 @@ export component MainWindow inherits Window {
                 }
 
                 NavItem {
-                    label: "账号";
+                    label: "账号与更新";
                     active: root.page == 4;
                     clicked => {
                         root.page = 4;
@@ -726,18 +952,10 @@ export component MainWindow inherits Window {
                 }
 
                 NavItem {
-                    label: "更新";
+                    label: "关于";
                     active: root.page == 5;
                     clicked => {
                         root.page = 5;
-                    }
-                }
-
-                NavItem {
-                    label: "关于";
-                    active: root.page == 6;
-                    clicked => {
-                        root.page = 6;
                     }
                 }
             }
@@ -748,450 +966,513 @@ export component MainWindow inherits Window {
             background: Palette.border;
         }
 
-        Flickable {
+        VerticalLayout {
             horizontal-stretch: 1;
-            content-height: inner.preferred-height;
 
-            inner := VerticalLayout {
-                padding: 16px;
-                spacing: 16px;
-                alignment: start;
+            Flickable {
+                vertical-stretch: 1;
+                content-height: inner.preferred-height;
 
-                if root.page == 0: VerticalLayout {
-                    spacing: 16px;
+                inner := VerticalLayout {
+                    padding-left: 32px;
+                    padding-right: 32px;
+                    padding-top: 28px;
+                    padding-bottom: 24px;
+                    spacing: 20px;
                     alignment: start;
 
-                    Card {
-                        title: "候选";
+                    if root.page == 0: VerticalLayout {
+                        spacing: 20px;
+                        alignment: start;
 
-                        Row {
-                            label: "候选个数";
+                        PageHeader {
+                            title: "输入";
+                            subtitle: "候选窗的大小，以及打字时的几个常用开关。";
+                        }
 
-                            Segmented {
-                                labels: ["5", "7", "9"];
-                                current: root.max-index;
-                                selected(index) => {
-                                    root.max-selected(index);
+                        Card {
+                            title: "候选";
+
+                            Row {
+                                label: "候选个数";
+                                desc: "每页显示几个候选词";
+
+                                Segmented {
+                                    labels: ["5", "7", "9"];
+                                    current: root.max-index;
+                                    selected(index) => {
+                                        root.max-selected(index);
+                                    }
+                                }
+                            }
+
+                            Row {
+                                label: "字号";
+                                desc: "候选窗里文字的大小";
+                                divider: false;
+
+                                Segmented {
+                                    labels: ["小", "标准", "大"];
+                                    current: root.scale-index;
+                                    selected(index) => {
+                                        root.scale-selected(index);
+                                    }
                                 }
                             }
                         }
 
-                        Row {
-                            label: "字号";
+                        Card {
+                            title: "输入行为";
 
-                            Segmented {
-                                labels: ["小", "标准", "大"];
-                                current: root.scale-index;
-                                selected(index) => {
-                                    root.scale-selected(index);
+                            Row {
+                                label: "中文标点";
+                                desc: "输入中文时使用中文标点，Ctrl+. 可随时翻转";
+
+                                Toggle {
+                                    checked <=> root.cnpunct;
+                                    toggled => {
+                                        root.cnpunct-toggled(root.cnpunct);
+                                    }
                                 }
                             }
+
+                            Row {
+                                label: "英文模式";
+                                desc: "直接输出英文字母，和单击 Shift 是同一个开关";
+
+                                Toggle {
+                                    checked <=> root.english;
+                                    toggled => {
+                                        root.english-toggled(root.english);
+                                    }
+                                }
+                            }
+
+                            Row {
+                                label: "表情模式";
+                                desc: "候选里加入表情符号和表情包";
+                                divider: false;
+
+                                Toggle {
+                                    checked <=> root.emoji;
+                                    toggled => {
+                                        root.emoji-toggled(root.emoji);
+                                    }
+                                }
+                            }
+                        }
+
+                        Hint {
+                            text: "英文模式和表情模式大约半秒内会跟上。候选个数和字号要等输入法下次激活。";
                         }
                     }
 
-                    Card {
-                        title: "输入";
+                    if root.page == 1: VerticalLayout {
+                        spacing: 20px;
+                        alignment: start;
 
-                        Row {
-                            label: "中文标点";
+                        PageHeader {
+                            title: "外观";
+                            subtitle: "候选窗的排版、主题和配色。预览会马上变。";
+                        }
 
-                            Switch {
-                                checked <=> root.cnpunct;
-                                toggled => {
-                                    root.cnpunct-toggled(root.cnpunct);
+                        Card {
+                            title: "预览";
+
+                            CandPreview {
+                                horizontal: root.pv-horizontal;
+                                card: root.pv-card;
+                                frame: root.pv-border;
+                                text: root.pv-text;
+                                faint: root.pv-faint;
+                                fill: root.pv-fill;
+                                bar-text: root.pv-bar-text;
+                                text-px: root.pv-text-px;
+                                anno-px: root.pv-anno-px;
+                                index-px: root.pv-index-px;
+                            }
+                        }
+
+                        Card {
+                            title: "候选窗";
+
+                            Row {
+                                label: "排版";
+                                desc: "候选词竖着排或横着排";
+
+                                Segmented {
+                                    labels: ["竖排", "横排"];
+                                    current: root.layout-index;
+                                    min-width: 160px;
+                                    selected(index) => {
+                                        root.layout-selected(index);
+                                    }
+                                }
+                            }
+
+                            Row {
+                                label: "主题";
+                                desc: "跟随系统，或固定浅色、深色";
+
+                                Segmented {
+                                    labels: ["跟随系统", "浅色", "深色"];
+                                    current: root.theme-index;
+                                    min-width: 252px;
+                                    selected(index) => {
+                                        root.theme-selected(index);
+                                    }
+                                }
+                            }
+
+                            Row {
+                                label: "配色";
+                                desc: "候选窗和本窗口的强调色";
+                                divider: false;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: end;
+
+                                    Dot {
+                                        dot: root.dot0;
+                                        name: "青";
+                                        selected: root.accent-index == 0;
+                                        clicked => {
+                                            root.accent-selected(0);
+                                        }
+                                    }
+
+                                    Dot {
+                                        dot: root.dot1;
+                                        name: "粉";
+                                        selected: root.accent-index == 1;
+                                        clicked => {
+                                            root.accent-selected(1);
+                                        }
+                                    }
+
+                                    Dot {
+                                        dot: root.dot2;
+                                        name: "橙";
+                                        selected: root.accent-index == 2;
+                                        clicked => {
+                                            root.accent-selected(2);
+                                        }
+                                    }
+
+                                    Dot {
+                                        dot: root.dot3;
+                                        name: "紫";
+                                        selected: root.accent-index == 3;
+                                        clicked => {
+                                            root.accent-selected(3);
+                                        }
+                                    }
+
+                                    Dot {
+                                        dot: root.dot4;
+                                        name: "绿";
+                                        selected: root.accent-index == 4;
+                                        clicked => {
+                                            root.accent-selected(4);
+                                        }
+                                    }
                                 }
                             }
                         }
 
-                        Row {
-                            label: "英文模式";
-
-                            Switch {
-                                checked <=> root.english;
-                                toggled => {
-                                    root.english-toggled(root.english);
-                                }
-                            }
-                        }
-
-                        Row {
-                            label: "表情模式";
-
-                            Switch {
-                                checked <=> root.emoji;
-                                toggled => {
-                                    root.emoji-toggled(root.emoji);
-                                }
-                            }
+                        Hint {
+                            text: "正在打字的程序要等这次输入结束、下次激活旁译，候选窗才会换成新的字号、排版、主题和配色。";
                         }
                     }
 
-                    Hint {
-                        text: "中文标点也可以用 Ctrl+. 翻转，英文模式和单击 Shift 是同一个开关。英文模式和表情模式大约半秒内会跟上。候选个数和字号要等输入法下次激活。";
-                    }
-                }
+                    if root.page == 2: VerticalLayout {
+                        spacing: 20px;
+                        alignment: start;
 
-                if root.page == 1: VerticalLayout {
-                    spacing: 16px;
-                    alignment: start;
+                        PageHeader {
+                            title: "翻译";
+                            subtitle: "中文候选旁边显示俄语。";
+                        }
 
-                    Text {
-                        text: "候选窗预览";
-                        font-family: "Microsoft YaHei UI";
-                        font-size: 13px;
-                        font-weight: 600;
-                        color: Palette.foreground;
-                    }
+                        Card {
+                            title: "模式";
 
-                    CandPreview {
-                        horizontal: root.pv-horizontal;
-                        card: root.pv-card;
-                        frame: root.pv-border;
-                        text: root.pv-text;
-                        faint: root.pv-faint;
-                        fill: root.pv-fill;
-                        bar-text: root.pv-bar-text;
-                        text-px: root.pv-text-px;
-                        anno-px: root.pv-anno-px;
-                        index-px: root.pv-index-px;
-                    }
+                            Row {
+                                label: "翻译模式";
+                                desc: "关闭、逐字翻译，或整句翻译";
+                                divider: false;
 
-                    Card {
-                        title: "窗口";
-
-                        Row {
-                            label: "排版";
-
-                            Segmented {
-                                labels: ["竖排", "横排"];
-                                current: root.layout-index;
-                                min-width: 160px;
-                                selected(index) => {
-                                    root.layout-selected(index);
+                                Segmented {
+                                    labels: ["关", "逐字", "整句"];
+                                    current: root.trmode;
+                                    selected(index) => {
+                                        root.trmode-selected(index);
+                                    }
                                 }
                             }
                         }
 
-                        Row {
-                            label: "主题";
+                        Hint {
+                            text: "Ctrl+, 会在关、逐字、整句之间循环。正在打字的程序要等输入法下次激活。";
+                        }
+                    }
 
-                            Segmented {
-                                labels: ["跟随系统", "浅色", "深色"];
-                                current: root.theme-index;
-                                min-width: 280px;
-                                selected(index) => {
-                                    root.theme-selected(index);
+                    if root.page == 3: VerticalLayout {
+                        spacing: 20px;
+                        alignment: start;
+
+                        PageHeader {
+                            title: "词库";
+                            subtitle: "你自己的短语、词条和表情包。这些文件只在这台电脑上。";
+                        }
+
+                        Card {
+                            title: "我的文件";
+
+                            Row {
+                                label: "自定义短语";
+                                desc: "用缩写快速打出常用的话";
+
+                                Button {
+                                    text: "打开短语文件";
+                                    horizontal-stretch: 0;
+                                    clicked => {
+                                        root.open-phrases();
+                                    }
+                                }
+                            }
+
+                            Row {
+                                label: "用户词库";
+                                desc: "补充输入法里没有的中文词";
+
+                                Button {
+                                    text: "打开用户词库";
+                                    horizontal-stretch: 0;
+                                    clicked => {
+                                        root.open-user-dict();
+                                    }
+                                }
+                            }
+
+                            Row {
+                                label: "用户释义";
+                                desc: "改写或补充俄语释义";
+
+                                Button {
+                                    text: "打开用户释义";
+                                    horizontal-stretch: 0;
+                                    clicked => {
+                                        root.open-user-gloss();
+                                    }
+                                }
+                            }
+
+                            Row {
+                                label: "表情包";
+                                desc: "表情包文件所在的文件夹";
+                                divider: false;
+
+                                Button {
+                                    text: "打开表情包文件夹";
+                                    horizontal-stretch: 0;
+                                    clicked => {
+                                        root.open-packs();
+                                    }
                                 }
                             }
                         }
 
-                        Row {
-                            label: "配色";
+                        Card {
+                            title: "本机条数";
+
+                            ValueRow {
+                                label: "自定义短语";
+                                value: root.stat-phrases;
+                            }
+
+                            ValueRow {
+                                label: "用户词库";
+                                value: root.stat-dict;
+                            }
+
+                            ValueRow {
+                                label: "用户释义";
+                                value: root.stat-gloss;
+                            }
+
+                            ValueRow {
+                                label: "表情包";
+                                value: root.stat-packs;
+                            }
+
+                            ValueRow {
+                                label: "自学习";
+                                value: root.stat-learned;
+                                divider: false;
+                            }
+                        }
+
+                        Hint {
+                            text: "内置词库的条数在输入法里，本程序不内嵌词库。";
+                        }
+                    }
+
+                    if root.page == 4: VerticalLayout {
+                        spacing: 20px;
+                        alignment: start;
+
+                        PageHeader {
+                            title: "账号与更新";
+                            subtitle: "登录是可选的；更新由单独的更新程序负责。";
+                        }
+
+                        Card {
+                            title: "账号";
+
+                            Row {
+                                label: "旁译账号";
+                                desc: "邮箱验证码登录。不登录也能正常打字";
+                                divider: false;
+
+                                Button {
+                                    text: "打开账号窗口";
+                                    horizontal-stretch: 0;
+                                    clicked => {
+                                        root.open-account();
+                                    }
+                                }
+                            }
+                        }
+
+                        Hint {
+                            text: "打字、词库和表情包都不需要登录。输入法不上传按键、候选或词库。只有账号窗口在发送验证码、登录或退出时才会联网。没有配置登录服务时，那个窗口会写明登录不可用。";
+                        }
+
+                        Card {
+                            title: "更新";
+
+                            Row {
+                                label: "检查更新";
+                                desc: "现在就去看有没有新版本";
+
+                                Button {
+                                    text: "检查更新";
+                                    horizontal-stretch: 0;
+                                    clicked => {
+                                        root.check-update();
+                                    }
+                                }
+                            }
+
+                            Row {
+                                label: "自动检查";
+                                desc: "登录 Windows 时检查，有新版再提醒你";
+                                divider: false;
+
+                                Toggle {
+                                    checked <=> root.updater-on;
+                                    toggled => {
+                                        root.updater-toggled(root.updater-on);
+                                    }
+                                }
+                            }
+                        }
+
+                        Hint {
+                            text: "检查和开关都交给已经安装的更新程序，结果由它自己提示。这个窗口不联网。";
+                        }
+                    }
+
+                    if root.page == 5: VerticalLayout {
+                        spacing: 16px;
+                        alignment: start;
+
+                        // Mascots 自带固定宽度，直接放进竖排会把整页宽度也卡死，所以外面包一层横排。
+                        HorizontalLayout {
+                            alignment: start;
+
+                            Mascots {
+                                dark: root.mascot-dark;
+                                side: 64px;
+                            }
+                        }
+
+                        Text {
+                            text: "旁译";
+                            font-family: "Microsoft YaHei UI";
+                            font-size: 28px;
+                            font-weight: 600;
+                            color: Palette.foreground;
+                        }
+
+                        Text {
+                            text: "版本 " + root.version + "  ·  中文输入，俄语候选";
+                            font-family: "Microsoft YaHei UI";
+                            font-size: 13px;
+                            color: Theme.muted;
+                        }
+
+                        Card {
+                            title: "许可";
+
+                            Rectangle {
+                                min-height: 8px;
+                            }
 
                             HorizontalLayout {
-                                spacing: 8px;
-                                alignment: end;
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                padding-bottom: 12px;
 
-                                Dot {
-                                    dot: root.dot0;
-                                    name: "青";
-                                    selected: root.accent-index == 0;
-                                    clicked => {
-                                        root.accent-selected(0);
-                                    }
-                                }
-
-                                Dot {
-                                    dot: root.dot1;
-                                    name: "粉";
-                                    selected: root.accent-index == 1;
-                                    clicked => {
-                                        root.accent-selected(1);
-                                    }
-                                }
-
-                                Dot {
-                                    dot: root.dot2;
-                                    name: "橙";
-                                    selected: root.accent-index == 2;
-                                    clicked => {
-                                        root.accent-selected(2);
-                                    }
-                                }
-
-                                Dot {
-                                    dot: root.dot3;
-                                    name: "紫";
-                                    selected: root.accent-index == 3;
-                                    clicked => {
-                                        root.accent-selected(3);
-                                    }
-                                }
-
-                                Dot {
-                                    dot: root.dot4;
-                                    name: "绿";
-                                    selected: root.accent-index == 4;
-                                    clicked => {
-                                        root.accent-selected(4);
-                                    }
+                                Hint {
+                                    text: "旁译自己的代码按 MIT 许可发布。词典数据按 CC BY-SA 3.0 / 4.0 随输入法发布，不编进这个设置程序。界面用 Slint 绘制，下面这枚徽章是免版税协议要求的署名，不是广告。";
                                 }
                             }
-                        }
-                    }
 
-                    Hint {
-                        text: "预览会马上变。正在打字的程序要等这次输入结束、下次激活旁译，候选窗才会换成新的字号、排版、主题和配色。";
-                    }
-                }
+                            Rectangle {
+                                height: 110px;
+                                vertical-stretch: 0;
 
-                if root.page == 2: VerticalLayout {
-                    spacing: 16px;
-                    alignment: start;
-
-                    Card {
-                        title: "模式";
-
-                        Row {
-                            label: "翻译模式";
-
-                            Segmented {
-                                labels: ["关", "逐字", "整句"];
-                                current: root.trmode;
-                                selected(index) => {
-                                    root.trmode-selected(index);
-                                }
-                            }
-                        }
-                    }
-
-                    Hint {
-                        text: "Ctrl+, 会在关、逐字、整句之间循环。正在打字的程序要等输入法下次激活。";
-                    }
-                }
-
-                if root.page == 3: VerticalLayout {
-                    spacing: 16px;
-                    alignment: start;
-
-                    Card {
-                        title: "文件";
-
-                        Row {
-                            label: "自定义短语";
-
-                            Button {
-                                text: "打开短语文件";
-                                horizontal-stretch: 0;
-                                clicked => {
-                                    root.open-phrases();
-                                }
+                                AboutSlint { }
                             }
                         }
 
-                        Row {
-                            label: "用户词库";
+                        Card {
+                            title: "隐私";
 
-                            Button {
-                                text: "打开用户词库";
-                                horizontal-stretch: 0;
-                                clicked => {
-                                    root.open-user-dict();
+                            HorizontalLayout {
+                                padding: 16px;
+
+                                Hint {
+                                    text: "输入法本体离线运行，没有广告，也不做遥测。账号窗口和更新程序是另外两个程序。";
                                 }
                             }
-                        }
-
-                        Row {
-                            label: "用户释义";
-
-                            Button {
-                                text: "打开用户释义";
-                                horizontal-stretch: 0;
-                                clicked => {
-                                    root.open-user-gloss();
-                                }
-                            }
-                        }
-
-                        Row {
-                            label: "表情包";
-
-                            Button {
-                                text: "打开表情包文件夹";
-                                horizontal-stretch: 0;
-                                clicked => {
-                                    root.open-packs();
-                                }
-                            }
-                        }
-                    }
-
-                    Card {
-                        title: "本机文件";
-
-                        Hint {
-                            text: "自定义短语  " + root.stat-phrases;
-                        }
-
-                        Hint {
-                            text: "用户词库  " + root.stat-dict;
-                        }
-
-                        Hint {
-                            text: "用户释义  " + root.stat-gloss;
-                        }
-
-                        Hint {
-                            text: "表情包  " + root.stat-packs;
-                        }
-
-                        Hint {
-                            text: "自学习  " + root.stat-learned;
-                        }
-                    }
-
-                    Card {
-                        title: "内置词库";
-
-                        Hint {
-                            text: "条数在输入法里，本程序不内嵌词库。";
                         }
                     }
                 }
+            }
 
-                if root.page == 4: VerticalLayout {
-                    spacing: 16px;
-                    alignment: start;
+            if root.status != "": Rectangle {
+                vertical-stretch: 0;
+                height: 36px;
+                background: Palette.alternate-background;
 
-                    Card {
-                        title: "登录";
-
-                        Row {
-                            label: "旁译账号";
-
-                            Button {
-                                text: "打开账号窗口";
-                                horizontal-stretch: 0;
-                                clicked => {
-                                    root.open-account();
-                                }
-                            }
-                        }
-                    }
-
-                    Card {
-                        title: "说明";
-
-                        Hint {
-                            text: "打字、词库和表情包都不需要登录。输入法不上传按键、候选或词库。只有账号窗口在发送验证码、登录或退出时才会联网。没有配置登录服务时，那个窗口会写明登录不可用。打不开也不影响打字。";
-                        }
-                    }
-                }
-
-                if root.page == 5: VerticalLayout {
-                    spacing: 16px;
-                    alignment: start;
-
-                    Card {
-                        title: "检查";
-
-                        Row {
-                            label: "检查更新";
-
-                            Button {
-                                text: "检查更新";
-                                horizontal-stretch: 0;
-                                clicked => {
-                                    root.check-update();
-                                }
-                            }
-                        }
-
-                        Row {
-                            label: "自动检查";
-
-                            Switch {
-                                checked <=> root.updater-on;
-                                toggled => {
-                                    root.updater-toggled(root.updater-on);
-                                }
-                            }
-                        }
-                    }
-
-                    Hint {
-                        text: "检查和开关都交给已经安装的更新程序，结果由它自己提示。这个窗口不联网。自动检查默认开；配置文件还不存在时也按开显示。";
-                    }
-                }
-
-                if root.page == 6: VerticalLayout {
-                    spacing: 16px;
-                    alignment: center;
-
-                    Mascots {
-                        dark: root.mascot-dark;
-                        side: 72px;
-                    }
-
-                    Text {
-                        text: "旁译";
-                        font-family: "Microsoft YaHei UI";
-                        font-size: 28px;
-                        font-weight: 600;
-                        color: Palette.foreground;
-                        horizontal-alignment: center;
-                    }
-
-                    Text {
-                        text: "v" + root.version;
-                        font-family: "Segoe UI Variable";
-                        font-size: 14px;
-                        color: Palette.foreground;
-                        horizontal-alignment: center;
-                    }
-
-                    Text {
-                        text: "中文输入，俄语候选。";
-                        font-family: "Microsoft YaHei UI";
-                        font-size: 14px;
-                        color: Palette.foreground;
-                        horizontal-alignment: center;
-                    }
-
-                    Card {
-                        title: "许可";
-
-                        Hint {
-                            text: "旁译自己的代码按 MIT 许可发布。词典数据按 CC BY-SA 3.0 / 4.0 随输入法发布，不编进这个设置程序。";
-                        }
-
-                        Hint {
-                            text: "界面用 Slint 绘制。下面这枚徽章是免版税协议要求的署名，不是广告。";
-                        }
-
-                        Rectangle {
-                            height: 120px;
-                            vertical-stretch: 0;
-
-                            AboutSlint { }
-                        }
-                    }
-
-                    Card {
-                        title: "输入法本体";
-
-                        Hint {
-                            text: "输入法本体离线运行，没有广告，也不做遥测。账号窗口和更新程序是另外两个程序。";
-                        }
-                    }
+                Rectangle {
+                    height: 1px;
+                    y: 0;
+                    background: Palette.border;
                 }
 
                 Text {
+                    x: 32px;
+                    width: parent.width - 64px;
                     text: root.status;
                     font-family: "Microsoft YaHei UI";
                     font-size: 12px;
-                    wrap: word-wrap;
-                    min-height: 20px;
+                    overflow: elide;
+                    vertical-alignment: center;
                     color: Palette.foreground;
                 }
             }
