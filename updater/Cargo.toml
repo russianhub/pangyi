@@ -4,7 +4,7 @@
 [package]
 name = "pangyi-updater"
 # 必须与输入法版本号一致：发版时由 release workflow 按标签同步（见仓库 README）。
-version = "4.19.0"
+version = "4.20.0"
 edition = "2021"
 
 [dependencies]
