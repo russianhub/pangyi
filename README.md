@@ -6,11 +6,11 @@
 
 **面向俄语学习者的 Windows 系统输入法。** 输入熟悉的中文拼音，在候选窗里查看对应的俄语释义；有重音的数据会显示重音。写作、聊天、记单词，都从一次输入开始。
 
-**[↓ 下载 v4.18.0 Windows 安装包](https://github.com/russianhub/pangyi/releases/download/v4.18.0/pangyi-v4.18.0.exe)** · [更新说明](docs/releases/v4.18.0.md) · [反馈问题](https://github.com/russianhub/pangyi/issues)
+**[↓ 下载 v4.20.0 Windows 安装包](https://github.com/russianhub/pangyi/releases/download/v4.20.0/pangyi-v4.20.0.exe)** · [更新说明](docs/releases/v4.20.0.md) · [反馈问题](https://github.com/russianhub/pangyi/issues)
 
 免费开源 · 本机运行 · 无广告 · 打字和查词不需要联网
 
-账号是可选功能。输入法核心离线：不登录也能打字、用本机词库和表情包，输入法 DLL 不访问网络。只有从设置打开「旁译账号」并登录时，那个窗口才会联网。已发布的 v4.18.0 安装包还没有这个窗口。
+账号是可选功能。输入法核心离线：不登录也能打字、用本机词库和表情包，输入法 DLL 不访问网络。只有从设置打开「旁译账号」并登录时，那个窗口才会联网。
 
 输入法本体（`pangyi_ime.dll`）完全离线，不联网。检查更新由独立的 `pangyi-updater.exe` 完成：自动检查只请求版本信息（`https://eyuxq.com/latest.json`），设置里的「更新」行可以随时关闭。只有你在更新弹窗里选择下载时，这个独立程序才会去取安装包。
 
@@ -24,6 +24,14 @@
 
 旁译接入 Windows 输入法系统（TSF），安装后按 `Win + 空格` 切换使用，无需每次启动独立查词程序。可在记事本、Word、浏览器、聊天软件等支持系统输入法的应用中使用；具体兼容情况欢迎反馈。
 
+## v4.20.0：新的设置窗口
+
+- **独立的设置程序**：双击桌面或开始菜单里的「旁译」，打开的是 `pangyi-settings.exe`。左侧有导航，设置按分组卡片排列，开 / 关项用开关，多选项用分段控件，强调色跟着所选配色走。
+- **这是第一次把新设置窗口放进安装包**。v4.19.0 里还是旧的一排按钮。从旧版升级后，若仍看到旧界面，请完全退出相关应用并注销后重新登录。
+- **还没在真实 Windows 上亲手验证**：新窗口经过 Linux 下的实际运行截图，以及 Windows CI 的编译和单元测试。请不要把它当成已经在 Windows 真机上用过。
+
+[查看完整更新、安装说明与尚未在 Windows 上手工验证的部分 →](docs/releases/v4.20.0.md)
+
 ## v4.18.0：可以加自己的词，也可以打出表情和符号
 
 - **用户词库**：在 `%LOCALAPPDATA%\Pangyi\user-dict.tsv` 里加词，在 `user-gloss.tsv` 里改已有词的俄语。不用联网，也不用账号。第一次切到旁译时，如果文件还不存在，会生成带说明的模板。
@@ -34,7 +42,7 @@
 
 ## 三步开始
 
-1. 下载并运行上方 `pangyi-v4.18.0.exe` 安装包。该版本未签名；若出现 SmartScreen 提示，先确认下载来源与 [Release 中的 SHA256](https://github.com/russianhub/pangyi/releases/tag/v4.18.0)，再决定是否继续运行。
+1. 下载并运行上方 `pangyi-v4.20.0.exe` 安装包。该版本未签名；若出现 SmartScreen 提示，先确认下载来源与 [Release 中的 SHA256](https://github.com/russianhub/pangyi/releases/tag/v4.20.0)，再决定是否继续运行。
 2. 首次安装后，按安装提示注销并重新登录（也可重启电脑）；升级后，保存工作并完全退出、重新打开使用旁译的应用，让它加载新版输入法。
 3. 按 `Win + 空格` 选择「旁译」，输入 `pengyou` 或 `kaifa` 开始使用。双击桌面「旁译」打开设置。
 
