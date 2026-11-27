@@ -1020,6 +1020,8 @@ mod tests {
     #[test]
     fn crowded_reading_includes_user_words_and_builtin_summary() {
         assert!(crowded_reading("shi4", &[]));
+        assert!(crowded_reading("nv", &[]));
+        assert!(crowded_reading("lǜ", &[]));
         assert!(!crowded_reading("mygate", &[]));
         let rows = (0..8)
             .map(|i| entry(&format!("旁译{i}"), "mygate", "", ""))

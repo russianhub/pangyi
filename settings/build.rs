@@ -21,7 +21,8 @@ fn build_busy_readings(manifest: &std::path::Path) {
         let mut fields = line.split('\t');
         let Some(head) = fields.next() else { continue };
         let Some(key) = fields.nth(1) else { continue };
-        let words = readings.entry(key.to_owned()).or_default();
+        // 输入法接受字母 v 作为 ü 的键盘拼写。
+        let words = readings.entry(key.replace('ü', "v")).or_default();
         if words.len() < 8 {
             words.insert(head.to_owned());
         }
