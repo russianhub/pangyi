@@ -85,7 +85,7 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
                 state.visible.clear();
                 state.all.clear();
                 state.selected.clear();
-                ui.set_status(format!("无法读取词库：{error}").into());
+                ui.invoke_show_lex_status(format!("无法读取词库：{error}").into(), false);
             }
         }
         let labels: Vec<SharedString> = std::iter::once("选择已保存的词条".into())
@@ -200,13 +200,24 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             theme: ui.get_lex_theme().into(),
         };
         let original = state.borrow().original.clone();
+        let previous_undo = ui.get_lex_undo_id();
         match edit_lexicon(&folder, kind(&ui), original.as_ref(), Some(replacement)) {
             Ok(()) => {
-                ui.set_status("词条已保存，已生效，无需重启。请重新输入拼音查看候选。".into());
                 ui.invoke_lex_clear();
                 refresh(&ui, &folder);
+                if ui.get_lex_can_undo() && ui.get_lex_undo_id() != previous_undo {
+                    ui.invoke_show_lex_status(
+                        "权重已调整。重新输入拼音即可看到变化。".into(),
+                        true,
+                    );
+                } else {
+                    ui.invoke_show_lex_status(
+                        "词条已保存，已生效，无需重启。请重新输入拼音查看候选。".into(),
+                        false,
+                    );
+                }
             }
-            Err(error) => ui.set_status(format!("词条未保存：{error}").into()),
+            Err(error) => ui.invoke_show_lex_status(format!("词条未保存：{error}").into(), false),
         }
     });
 
@@ -225,18 +236,18 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             || original.extra != ui.get_lex_extra().as_str()
             || original.theme != ui.get_lex_theme().as_str()
         {
-            ui.set_status("请先保存词条修改，再调整顺序。".into());
+            ui.invoke_show_lex_status("请先保存词条修改，再调整顺序。".into(), false);
             return;
         }
         match move_weight(&folder, &original, up) {
             Ok(Some(entry)) => {
                 set_fields(&ui, &entry);
                 state.borrow_mut().original = Some(entry);
-                ui.set_status("顺序已保存。重新输入拼音即可看到变化，无需重启。".into());
                 refresh(&ui, &folder);
+                ui.invoke_show_lex_status("权重已调整。重新输入拼音即可看到变化。".into(), true);
             }
-            Ok(None) => ui.set_status("已经到达这个读音的自定义词条边界。".into()),
-            Err(error) => ui.set_status(format!("无法调整顺序：{error}").into()),
+            Ok(None) => ui.invoke_show_lex_status("已经到达这个读音的自定义词条边界。".into(), false),
+            Err(error) => ui.invoke_show_lex_status(format!("无法调整顺序：{error}").into(), false),
         }
     });
 
@@ -256,11 +267,14 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             };
             match delete_entries(&folder, kind(&ui), &selected) {
                 Ok(()) => {
-                    ui.set_status(format!("已删除 {} 条词条。", selected.len()).into());
                     ui.invoke_lex_clear();
                     refresh(&ui, &folder);
+                    ui.invoke_show_lex_status(
+                        format!("已删除 {} 条词条。", selected.len()).into(),
+                        !selected.is_empty(),
+                    );
                 }
-                Err(error) => ui.set_status(format!("词条未删除：{error}").into()),
+                Err(error) => ui.invoke_show_lex_status(format!("词条未删除：{error}").into(), false),
             }
         };
         if bulk {
@@ -277,15 +291,15 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
         match undo_last(&folder, Some(ui.get_lex_undo_id().as_str())) {
             Ok(Some(description)) => {
                 ui.invoke_lex_clear();
-                ui.set_status(format!("已撤销「{description}」。无需重启。").into());
+                ui.invoke_show_lex_status(format!("已撤销「{description}」。无需重启。").into(), false);
                 refresh(&ui, &folder);
             }
             Ok(None) => {
-                ui.set_status("没有可撤销的操作。".into());
+                ui.invoke_show_lex_status("没有可撤销的操作。".into(), false);
                 update_undo(&ui, &folder);
             }
             Err(error) => {
-                ui.set_status(format!("无法撤销：{error}").into());
+                ui.invoke_show_lex_status(format!("无法撤销：{error}").into(), false);
                 update_undo(&ui, &folder);
             }
         }
@@ -309,10 +323,10 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
                         .unwrap_or("文件导入");
                     start_import(&ui, &state, kind(&ui), bytes, theme);
                 }
-                Err(error) => ui.set_status(format!("无法读取导入文件：{error}").into()),
+                Err(error) => ui.invoke_show_lex_status(format!("无法读取导入文件：{error}").into(), false),
             },
             Ok(None) => {}
-            Err(error) => ui.set_status(format!("无法打开导入文件：{error}").into()),
+            Err(error) => ui.invoke_show_lex_status(format!("无法打开导入文件：{error}").into(), false),
         }
     });
 
@@ -405,16 +419,19 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             let Some(plan) = state.preview.as_ref() else {
                 return;
             };
-            commit_import(&folder, plan)
+            commit_import(&folder, plan).map(|()| plan.added + plan.replaced + plan.merged)
         };
         match result {
-            Ok(()) => {
+            Ok(changed) => {
                 ui.invoke_lex_cancel_import();
-                ui.set_status("词典已导入，已生效，无需重启。".into());
                 refresh(&ui, &folder);
+                ui.invoke_show_lex_status(
+                    format!("已导入 {changed} 条词条，已生效，无需重启。").into(),
+                    changed > 0,
+                );
             }
             Err(error) => {
-                ui.set_status(format!("导入失败：{error}").into());
+                ui.invoke_show_lex_status(format!("导入失败：{error}").into(), false);
                 ui.invoke_lex_preview();
             }
         }
@@ -427,9 +444,9 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
         match export_backup(&folder) {
             Ok(path) => {
                 let _ = crate::open_target(&pangyi_settings::OpenTarget::Directory(path.clone()));
-                ui.set_status(format!("备份已导出到 {}", path.display()).into());
+                ui.invoke_show_lex_status(format!("备份已导出到 {}", path.display()).into(), false);
             }
-            Err(error) => ui.set_status(format!("导出备份失败：{error}").into()),
+            Err(error) => ui.invoke_show_lex_status(format!("导出备份失败：{error}").into(), false),
         }
     });
 
@@ -437,7 +454,7 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
     ui.on_lex_catalog(move || {
         let Some(ui) = weak.upgrade() else { return };
         if let Err(error) = open_catalog() {
-            ui.set_status(format!("无法打开词典下载目录：{error}").into());
+            ui.invoke_show_lex_status(format!("无法打开词典下载目录：{error}").into(), false);
         }
     });
 }

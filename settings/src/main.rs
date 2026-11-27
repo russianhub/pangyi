@@ -16,6 +16,7 @@ use pangyi_settings::{
     UPDATER_DISABLE, UPDATER_ENABLE, UPDATER_EXE, UPDATER_MANUAL,
 };
 use slint::ComponentHandle;
+use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
 
 slint::include_modules!();
 
@@ -32,6 +33,21 @@ fn main() {
 
 fn run() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
+    let weak = ui.as_weak();
+    ui.window().on_winit_window_event(move |_, event| {
+        if let Some(ui) = weak.upgrade() {
+            match event {
+                WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                    ui.set_lex_keyboard_focus(true);
+                }
+                WindowEvent::MouseInput { state, .. } if state.is_pressed() => {
+                    ui.set_lex_keyboard_focus(false);
+                }
+                _ => {}
+            }
+        }
+        EventResult::Propagate
+    });
     ui.set_version(env!("CARGO_PKG_VERSION").into());
     let dir = data_dir();
     wire(&ui, dir.clone());
