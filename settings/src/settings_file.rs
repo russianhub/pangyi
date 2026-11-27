@@ -381,7 +381,7 @@ fn is_blank(text: &str) -> bool {
     text.lines().all(|line| line.trim().is_empty())
 }
 
-fn unique_stamp() -> u64 {
+pub(crate) fn unique_stamp() -> u64 {
     static TICK: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

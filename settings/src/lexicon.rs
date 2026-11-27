@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use crate::settings_file::write_atomic;
 
+mod history;
+pub use history::{undo_action, undo_last};
+
 #[path = "../../shared/lexicon_backup.rs"]
 mod backup;
 use backup::{lock, snapshot_locked, GLOSSES_FILE, WORDS_FILE};
@@ -19,7 +22,7 @@ use format::{
     analyze_reading, parse_weight, validate_head, MAX_BYTES, MAX_DATA_LINES, MAX_GLOSS_CHARS,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LexiconKind {
     Words,
     Glosses,
@@ -292,13 +295,25 @@ pub fn edit_lexicon(
         }
     }
 
+    let changed_weight = kind == LexiconKind::Words
+        && original
+            .zip(replacement.as_ref())
+            .is_some_and(|(old, new)| effective_weight(old) != effective_weight(new));
     let (updates, append) = match (original_key, replacement.as_ref()) {
         (Some(old), row) => (HashMap::from([(old, row)]), Vec::new()),
         (None, row) => (HashMap::new(), row.into_iter().collect()),
     };
     let output = rewrite_rows(&text, kind, &updates, append);
     check_size(&output)?;
-    write_atomic(&path, &output)
+    if changed_weight {
+        history::save_change(dir, kind, "调整权重".into(), text, output)
+    } else {
+        write_atomic(&path, &output)
+    }
+}
+
+fn effective_weight(row: &LexiconEntry) -> i64 {
+    parse_weight(&row.extra).ok().flatten().unwrap_or(0)
 }
 
 /// Move a saved custom word within the ranked list for its normalized reading.
@@ -328,9 +343,8 @@ pub fn move_weight(
         .filter(|key| key.1 == selected_reading && seen.insert(key.clone()))
         .collect();
     slots.reverse();
-    let weight = |row: &LexiconEntry| parse_weight(&row.extra).ok().flatten().unwrap_or(0);
     let mut ranked: Vec<_> = slots.iter().map(|key| &current[key]).collect();
-    ranked.sort_by_key(|row| std::cmp::Reverse(weight(row)));
+    ranked.sort_by_key(|row| std::cmp::Reverse(effective_weight(row)));
     let index = ranked.iter().position(|row| *row == selected).unwrap();
     let neighbor = if up {
         index.checked_sub(1)
@@ -350,7 +364,7 @@ pub fn move_weight(
     let updates = slots.into_iter().zip(moved.iter().map(Some)).collect();
     let after = rewrite_rows(&before, kind, &updates, Vec::new());
     check_size(&after)?;
-    write_atomic(&path, &after)?;
+    history::save_change(dir, kind, "调整权重顺序".into(), before, after)?;
     Ok(Some(moved.swap_remove(neighbor)))
 }
 
@@ -415,17 +429,7 @@ fn rewrite_rows(
     after
 }
 
-pub struct UndoChange {
-    kind: LexiconKind,
-    before: String,
-    after: String,
-}
-
-pub fn delete_entries(
-    dir: &Path,
-    kind: LexiconKind,
-    selected: &[LexiconEntry],
-) -> io::Result<UndoChange> {
+pub fn delete_entries(dir: &Path, kind: LexiconKind, selected: &[LexiconEntry]) -> io::Result<()> {
     let _lock = lock(dir)?;
     let path = dir.join(kind.filename());
     let before = read_local(&path)?;
@@ -442,21 +446,8 @@ pub fn delete_entries(
         return Err(invalid("请选择要删除的词条"));
     }
     let after = rewrite_rows(&before, kind, &updates, Vec::new());
-    write_atomic(&path, &after)?;
-    Ok(UndoChange {
-        kind,
-        before,
-        after,
-    })
-}
-
-pub fn undo_change(dir: &Path, change: &UndoChange) -> io::Result<()> {
-    let _lock = lock(dir)?;
-    let path = dir.join(change.kind.filename());
-    if read_local(&path)? != change.after {
-        return Err(invalid("词库在操作后有新的修改，撤销会覆盖这些修改"));
-    }
-    write_atomic(&path, &change.before)
+    let count = updates.len();
+    history::save_change(dir, kind, format!("删除 {count} 条"), before, after)
 }
 
 fn newline_style(text: &str) -> &'static str {
@@ -808,7 +799,7 @@ fn without_ending(line: &str) -> &str {
     &line[..line.len() - line_ending(line).len()]
 }
 
-pub fn commit_import(dir: &Path, preview: &ImportPreview) -> io::Result<Option<UndoChange>> {
+pub fn commit_import(dir: &Path, preview: &ImportPreview) -> io::Result<()> {
     let _lock = lock(dir)?;
     let path = dir.join(preview.kind.filename());
     if read_local(&path)? != preview.before {
@@ -816,14 +807,16 @@ pub fn commit_import(dir: &Path, preview: &ImportPreview) -> io::Result<Option<U
     }
     if preview.has_changes() {
         snapshot_locked(dir, false)?;
-        write_atomic(&path, &preview.after)?;
-        return Ok(Some(UndoChange {
-            kind: preview.kind,
-            before: preview.before.clone(),
-            after: preview.after.clone(),
-        }));
+        let count = preview.added + preview.replaced + preview.merged;
+        history::save_change(
+            dir,
+            preview.kind,
+            format!("导入 {count} 条"),
+            preview.before.clone(),
+            preview.after.clone(),
+        )?;
     }
-    Ok(None)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1011,7 +1004,10 @@ mod tests {
             "",
         )
         .unwrap();
-        assert_eq!((plan.added, plan.skipped, plan.defaulted_weights), (1, 4, 1));
+        assert_eq!(
+            (plan.added, plan.skipped, plan.defaulted_weights),
+            (1, 4, 1)
+        );
         for (index, issue) in plan.issues.iter().take(4).enumerate() {
             assert!(issue.starts_with(&format!("第 {} 行", index + 1)));
         }
@@ -1099,7 +1095,7 @@ mod tests {
             "出行",
         )
         .unwrap();
-        let import = commit_import(&dir, &plan).unwrap().unwrap();
+        commit_import(&dir, &plan).unwrap();
         let imported = fs::read(&path).unwrap();
         let entries = lexicon_entries(&dir, kind).unwrap();
         let marked = entries
@@ -1107,11 +1103,11 @@ mod tests {
             .filter(|row| row.theme == "出行")
             .collect::<Vec<_>>();
         assert_eq!(marked.len(), 2);
-        let delete = delete_entries(&dir, kind, &marked).unwrap();
+        delete_entries(&dir, kind, &marked).unwrap();
         assert_eq!(fs::read(&path).unwrap(), original);
-        undo_change(&dir, &delete).unwrap();
+        assert_eq!(undo_last(&dir, None).unwrap().as_deref(), Some("删除 2 条"));
         assert_eq!(fs::read(&path).unwrap(), imported);
-        undo_change(&dir, &import).unwrap();
+        assert_eq!(undo_last(&dir, None).unwrap().as_deref(), Some("导入 2 条"));
         assert_eq!(fs::read(&path).unwrap(), original);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1128,7 +1124,7 @@ mod tests {
             "办公",
         )
         .unwrap();
-        let undo = commit_import(&dir, &plan).unwrap().unwrap();
+        commit_import(&dir, &plan).unwrap();
         let row = lexicon_entries(&dir, kind).unwrap().pop().unwrap();
         let renamed = LexiconEntry {
             reading: "myjia".into(),
@@ -1136,7 +1132,7 @@ mod tests {
         };
         edit_lexicon(&dir, kind, Some(&row), Some(renamed.clone())).unwrap();
         assert!(lexicon_entries(&dir, kind).unwrap() == [renamed]);
-        assert!(undo_change(&dir, &undo).is_err());
+        assert!(undo_last(&dir, None).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
 

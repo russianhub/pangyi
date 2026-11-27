@@ -815,6 +815,8 @@ export component MainWindow inherits Window {
     in-out property <string> lex-theme;
     in property <bool> lex-crowded;
     in property <bool> lex-can-undo;
+    in property <string> lex-undo-id;
+    in property <string> lex-undo-label: "撤销";
     in property <int> lex-selected-count;
     property <bool> lex-bulk-open;
     callback lex-mark(int, bool);
@@ -1408,7 +1410,7 @@ export component MainWindow inherits Window {
                                         clicked => { root.lex-bulk-open = !root.lex-bulk-open; }
                                     }
                                     Button {
-                                        text: "撤销最近删除或导入";
+                                        text: root.lex-undo-label;
                                         enabled: root.lex-can-undo;
                                         clicked => { root.lex-undo(); }
                                     }

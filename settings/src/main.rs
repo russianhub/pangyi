@@ -215,6 +215,7 @@ fn wire(ui: &MainWindow, dir: PathBuf) {
     let weak = ui_weak.clone();
     ui.on_lexicon_shown(move || {
         if let Some(ui) = weak.upgrade() {
+            lexicon_ui::update_undo(&ui, &dir_stats);
             push_stats(&ui, &load_counts(&dir_stats));
             ui.invoke_lex_filter();
         }

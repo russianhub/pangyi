@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use pangyi_settings::{
     commit_import, crowded_reading, delete_entries, edit_lexicon, export_backup, lexicon_entries,
-    load_counts, move_weight, preview_import, read_import, undo_change, DuplicatePolicy,
-    ImportPreview, LexiconEntry, LexiconKind, UndoChange,
+    load_counts, move_weight, preview_import, read_import, undo_action, undo_last, DuplicatePolicy,
+    ImportPreview, LexiconEntry, LexiconKind,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -23,7 +23,6 @@ struct Editor {
     visible: Vec<LexiconEntry>,
     original: Option<LexiconEntry>,
     import: Option<(LexiconKind, Vec<u8>, String)>,
-    undo: Option<UndoChange>,
     all: Vec<LexiconEntry>,
     selected: HashSet<LexiconEntry>,
     preview: Option<ImportPreview>,
@@ -31,6 +30,7 @@ struct Editor {
 
 pub(super) fn wire(ui: &MainWindow, dir: &Path) {
     let editor = Rc::new(RefCell::new(Editor::default()));
+    update_undo(ui, dir);
     let choices = Rc::new(VecModel::<LexChoice>::default());
     ui.set_lex_choices(ModelRc::from(choices.clone()));
 
@@ -255,10 +255,8 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
                 }
             };
             match delete_entries(&folder, kind(&ui), &selected) {
-                Ok(change) => {
-                    state.borrow_mut().undo = Some(change);
-                    ui.set_lex_can_undo(true);
-                    ui.set_status(format!("已删除 {} 条词条，可撤销。", selected.len()).into());
+                Ok(()) => {
+                    ui.set_status(format!("已删除 {} 条词条。", selected.len()).into());
                     ui.invoke_lex_clear();
                     refresh(&ui, &folder);
                 }
@@ -273,26 +271,23 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
     }
 
     let weak = ui.as_weak();
-    let state = editor.clone();
     let folder = dir.to_path_buf();
     ui.on_lex_undo(move || {
         let Some(ui) = weak.upgrade() else { return };
-        let result = {
-            let state = state.borrow();
-            let Some(change) = state.undo.as_ref() else {
-                return;
-            };
-            undo_change(&folder, change)
-        };
-        match result {
-            Ok(()) => {
-                state.borrow_mut().undo = None;
-                ui.set_lex_can_undo(false);
+        match undo_last(&folder, Some(ui.get_lex_undo_id().as_str())) {
+            Ok(Some(description)) => {
                 ui.invoke_lex_clear();
-                ui.set_status("已撤销最近一次删除或导入，无需重启。".into());
+                ui.set_status(format!("已撤销「{description}」。无需重启。").into());
                 refresh(&ui, &folder);
             }
-            Err(error) => ui.set_status(format!("无法撤销：{error}").into()),
+            Ok(None) => {
+                ui.set_status("没有可撤销的操作。".into());
+                update_undo(&ui, &folder);
+            }
+            Err(error) => {
+                ui.set_status(format!("无法撤销：{error}").into());
+                update_undo(&ui, &folder);
+            }
         }
     });
 
@@ -413,11 +408,7 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             commit_import(&folder, plan)
         };
         match result {
-            Ok(change) => {
-                if let Some(change) = change {
-                    state.borrow_mut().undo = Some(change);
-                    ui.set_lex_can_undo(true);
-                }
+            Ok(()) => {
                 ui.invoke_lex_cancel_import();
                 ui.set_status("词典已导入，已生效，无需重启。".into());
                 refresh(&ui, &folder);
@@ -468,7 +459,22 @@ fn set_fields(ui: &MainWindow, entry: &LexiconEntry) {
     ui.set_lex_crowded(false);
 }
 
+pub(super) fn update_undo(ui: &MainWindow, folder: &Path) {
+    let action = undo_action(folder);
+    ui.set_lex_can_undo(action.is_some());
+    ui.set_lex_undo_id(
+        action
+            .as_ref()
+            .map_or_else(|| "".into(), |action| action.id.as_str().into()),
+    );
+    ui.set_lex_undo_label(action.map_or_else(
+        || "撤销".into(),
+        |action| format!("撤销：{}", action.description).into(),
+    ));
+}
+
 fn refresh(ui: &MainWindow, folder: &Path) {
+    update_undo(ui, folder);
     ui.invoke_lex_filter();
     crate::push_stats(ui, &load_counts(folder));
 }
