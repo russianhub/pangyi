@@ -16,6 +16,8 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 
 #[path = "setup/auth.rs"]
 mod auth;
+#[path = "../../../shared/lexicon_backup.rs"]
+mod lexicon_backup;
 #[path = "setup_plan.rs"]
 mod plan;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -551,10 +553,24 @@ fn main() {
     unsafe {
         let args: Vec<String> = std::env::args().collect();
         let entry = plan::route(&args, installed_current());
+        const BACKUP_DONE: &str = "--lexicon-backup-done";
+        if matches!(entry, plan::Entry::Install) && !args.iter().any(|arg| arg == BACKUP_DONE) {
+            // 在 UAC 前备份当前用户资料，避免输入管理员凭据后切换到其他用户目录。
+            if let Some(base) = std::env::var_os("LOCALAPPDATA").filter(|base| !base.is_empty()) {
+                if let Err(error) = lexicon_backup::automatic_upgrade_backup(&Path::new(&base).join("Pangyi")) {
+                    msg("旁译词库备份失败", &format!("安装尚未开始。请关闭正在修改词库的程序后重试。\n\n{error}"));
+                    return;
+                }
+            }
+        }
         // 提权重新启动时带上 --install / --uninstall，避免 UAC 之后把强制重装丢掉。
         if let Some(arg) = plan::elevation_arg(entry) {
             if !elevated() {
-                relaunch_elevated(arg);
+                if matches!(entry, plan::Entry::Install) {
+                    relaunch_elevated(&format!("{arg} {BACKUP_DONE}"));
+                } else {
+                    relaunch_elevated(arg);
+                }
                 return;
             }
         }

@@ -5,6 +5,7 @@
 //! 写回时比旧的整文件 `save()` 更窄：改前重读，只改一个键。
 
 mod colors;
+mod lexicon;
 mod local_files;
 mod settings_file;
 mod updater_cfg;
@@ -13,6 +14,11 @@ pub use colors::{
     accent_name, accent_strong, base_palette, effective_dark, mascot_palette, preview_palette,
     scaled_px, scheme_kind, Accent, BasePalette, MascotPalette, PreviewPalette, Rgb, SchemeKind,
     ACCENTS, ANNO_PX, INDEX_PX, TEXT_PX,
+};
+pub use lexicon::{
+    commit_import, crowded_reading, delete_entries, edit_lexicon, export_backup, lexicon_entries,
+    move_weight, preview_import, read_import, undo_action, undo_last, DuplicatePolicy,
+    ImportPreview, LexiconEntry, LexiconKind,
 };
 pub use local_files::{
     count_data_lines, count_pack_files, ensure_phrases_file, existing_file_or_dir, format_count,

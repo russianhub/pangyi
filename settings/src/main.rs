@@ -6,6 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod lexicon_ui;
+
 use pangyi_settings::{
     accent_strong, data_dir, effective_dark, ensure_phrases_file, existing_file_or_dir,
     format_count, load_counts, load_dir, packs_dir, phrase_path, preview_palette, scaled_px,
@@ -14,6 +16,7 @@ use pangyi_settings::{
     UPDATER_DISABLE, UPDATER_ENABLE, UPDATER_EXE, UPDATER_MANUAL,
 };
 use slint::ComponentHandle;
+use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
 
 slint::include_modules!();
 
@@ -30,6 +33,21 @@ fn main() {
 
 fn run() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
+    let weak = ui.as_weak();
+    ui.window().on_winit_window_event(move |_, event| {
+        if let Some(ui) = weak.upgrade() {
+            match event {
+                WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                    ui.set_lex_keyboard_focus(true);
+                }
+                WindowEvent::MouseInput { state, .. } if state.is_pressed() => {
+                    ui.set_lex_keyboard_focus(false);
+                }
+                _ => {}
+            }
+        }
+        EventResult::Propagate
+    });
     ui.set_version(env!("CARGO_PKG_VERSION").into());
     let dir = data_dir();
     wire(&ui, dir.clone());
@@ -42,6 +60,7 @@ fn run() -> Result<(), slint::PlatformError> {
 
 fn wire(ui: &MainWindow, dir: PathBuf) {
     let ui_weak = ui.as_weak();
+    lexicon_ui::wire(ui, &dir);
 
     let dir_max = dir.clone();
     let weak = ui_weak.clone();
@@ -212,7 +231,9 @@ fn wire(ui: &MainWindow, dir: PathBuf) {
     let weak = ui_weak.clone();
     ui.on_lexicon_shown(move || {
         if let Some(ui) = weak.upgrade() {
+            lexicon_ui::update_undo(&ui, &dir_stats);
             push_stats(&ui, &load_counts(&dir_stats));
+            ui.invoke_lex_filter();
         }
     });
 

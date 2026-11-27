@@ -4,7 +4,7 @@
 //! - `user-dict.tsv`：添加词（词头、拼音、可选俄语、可选权重）
 //! - `user-gloss.tsv`：改已有词的整条俄语
 //!
-//! 启动时读一次。新的一次拼音开始时再看文件修改时间，大约一秒最多看一次。
+//! 启动时读一次。每次新拼音检查用户词条时间，释义覆盖按约一秒间隔检查。
 //! 坏行跳过，不让输入法崩溃；最近的警告写在 `user-dict-warnings.txt`。
 //! 这里不用 Windows API，方便单测。真正的按键和候选窗仍在 `lib.rs` / `dict.rs`。
 
@@ -17,21 +17,15 @@ use std::time::SystemTime;
 
 use crate::dict::Hit;
 
-/// 每个文件最多读这么多字节。再大就截断并记一条警告，避免一个巨大文件拖住启动。
-pub(crate) const MAX_BYTES: usize = 256 * 1024;
-/// 每个文件最多收下这么多数据行（空行和 # 注释不计）。
-pub(crate) const MAX_DATA_LINES: usize = 5_000;
+#[path = "../../shared/lexicon_format.rs"]
+mod format;
+use self::format::{validate_head, Reading};
+pub(crate) use self::format::{
+    analyze_reading, parse_weight, MAX_BYTES, MAX_DATA_LINES, MAX_GLOSS_CHARS,
+};
+
 /// 警告列表最多留这么多条具体说明，再多就加一行「还有更多」。
 pub(crate) const MAX_WARNINGS: usize = 32;
-/// 词头最多多少个 Unicode 字符。
-const MAX_HEAD_CHARS: usize = 32;
-/// 俄语列最多多少个 Unicode 字符。
-pub(crate) const MAX_GLOSS_CHARS: usize = 400;
-/// 去掉声调之后的拼音字母最多多少个。
-pub(crate) const MAX_READING_CHARS: usize = 48;
-/// 权重要落在这个闭区间里。
-pub(crate) const MIN_WEIGHT: i64 = -9_999;
-pub(crate) const MAX_WEIGHT: i64 = 9_999;
 /// 大于等于这个数，用户词才能排到「该拼音内置精确第一候选」前面。
 pub(crate) const LEAD_WEIGHT: i64 = 100;
 /// 两次查看文件修改时间的最小间隔。
@@ -119,6 +113,7 @@ struct LoadState {
     gloss_mtime: Option<SystemTime>,
     last_check_ms: u64,
     loaded: bool,
+    retry_pending: bool,
 }
 
 impl LoadState {
@@ -129,6 +124,7 @@ impl LoadState {
             gloss_mtime: None,
             last_check_ms: 0,
             loaded: false,
+            retry_pending: false,
         }
     }
 }
@@ -202,7 +198,7 @@ pub(crate) fn load_at_startup() {
     poll(&mut g, &dir, now_ms(), true);
 }
 
-/// 一次新的拼音开始时调用（缓冲从空变成第一个字母）。间隔不够就什么都不做。
+/// 一次新的拼音开始时检查词库时间，发现保存就重载。
 pub(crate) fn on_composition_start() {
     let dir = user_dir();
     let mut g = store().lock().unwrap_or_else(|e| e.into_inner());
@@ -217,18 +213,23 @@ fn now_ms() -> u64 {
 }
 
 fn poll(state: &mut LoadState, dir: &Path, now: u64, force: bool) {
-    if state.loaded && !force && now.saturating_sub(state.last_check_ms) < CHECK_INTERVAL_MS {
+    let dict_path = dir.join(DICT_FILE);
+    // A settings save can change ranking even between two very close compositions.
+    let dict_mtime = mtime(&dict_path);
+    if state.loaded && !force && dict_mtime == state.dict_mtime
+        && now.saturating_sub(state.last_check_ms) < CHECK_INTERVAL_MS
+    {
         return;
     }
     state.last_check_ms = now;
-    let dict_path = dir.join(DICT_FILE);
     let gloss_path = dir.join(GLOSS_FILE);
     let mut warnings = Vec::new();
     ensure_template(&dict_path, DICT_TEMPLATE, &mut warnings);
     ensure_template(&gloss_path, GLOSS_TEMPLATE, &mut warnings);
-    let dict_mtime = mtime(&dict_path);
+    let dict_mtime = dict_mtime.or_else(|| mtime(&dict_path));
     let gloss_mtime = mtime(&gloss_path);
-    if state.loaded && !force && state.dict_mtime == dict_mtime && state.gloss_mtime == gloss_mtime
+    if state.loaded && !force && !state.retry_pending
+        && state.dict_mtime == dict_mtime && state.gloss_mtime == gloss_mtime
     {
         if !warnings.is_empty() {
             // 模板没写成，但仍把这条警告留下。已有快照不动。
@@ -243,6 +244,7 @@ fn poll(state: &mut LoadState, dir: &Path, now: u64, force: bool) {
             state.dict_mtime = dict_mtime;
             state.gloss_mtime = gloss_mtime;
             state.loaded = true;
+            state.retry_pending = false;
             write_warnings(dir, &warnings);
             crate::log(&format!(
                 "user-dict 已读入：{} 个拼音，{} 条警告",
@@ -254,8 +256,8 @@ fn poll(state: &mut LoadState, dir: &Path, now: u64, force: bool) {
             warnings.extend(err);
             // 读失败时留着上一份，避免用户正保存文件时把词库清空。
             state.loaded = true;
+            state.retry_pending = true;
             state.dict_mtime = dict_mtime;
-            state.gloss_mtime = gloss_mtime;
             write_warnings(dir, &warnings);
             crate::log("user-dict 读取失败，继续用上一份");
         }
@@ -717,19 +719,8 @@ fn check_head(
     head: &str,
     warnings: &mut Vec<String>,
 ) -> Option<String> {
-    if head.is_empty() {
-        push_warning(warnings, format!("{file}:{line_no}: 词头为空"));
-        return None;
-    }
-    if head.chars().count() > MAX_HEAD_CHARS {
-        push_warning(
-            warnings,
-            format!("{file}:{line_no}: 词头超过 {MAX_HEAD_CHARS} 个字符"),
-        );
-        return None;
-    }
-    if !has_han(head) {
-        push_warning(warnings, format!("{file}:{line_no}: 词头里要有汉字"));
+    if let Err(message) = validate_head(head) {
+        push_warning(warnings, format!("{file}:{line_no}: {message}"));
         return None;
     }
     Some(head.to_string())
@@ -748,20 +739,6 @@ fn check_reading(
             None
         }
     }
-}
-
-pub(crate) fn parse_weight(s: &str) -> Result<Option<i64>, &'static str> {
-    if s.is_empty() {
-        return Ok(None);
-    }
-    let n: i64 = match s.parse() {
-        Ok(n) => n,
-        Err(_) => return Err("权重不是整数"),
-    };
-    if !(MIN_WEIGHT..=MAX_WEIGHT).contains(&n) {
-        return Err("权重超出 -9999 到 9999");
-    }
-    Ok(Some(n))
 }
 
 fn gloss_file_ru(
@@ -812,147 +789,6 @@ pub(crate) fn push_warning(out: &mut Vec<String>, msg: String) {
     } else if out.len() == MAX_WARNINGS {
         out.push("还有更多问题没有列出。".to_string());
     }
-}
-
-pub(crate) struct Reading {
-    pub(crate) ascii: String,
-    pub(crate) tone: String,
-    pub(crate) raw: String,
-}
-
-pub(crate) fn analyze_reading(raw: &str) -> Result<Reading, &'static str> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err("读音为空");
-    }
-    if raw.chars().count() > 64 {
-        return Err("读音太长");
-    }
-    let mut ascii = String::new();
-    let mut tone = String::new();
-    for c in raw.chars() {
-        if c == '\'' || c == '\u{2019}' {
-            continue;
-        }
-        if matches!(c, '0'..='5') {
-            tone.push(if c == '0' { '5' } else { c });
-            continue;
-        }
-        if c.is_ascii_digit() {
-            return Err("读音里的数字只能是声调 0–5");
-        }
-        if c == '\u{0308}' {
-            // u + 分音符 = ü，输入时用 v。
-            if ascii.pop() == Some('u') {
-                ascii.push('v');
-                continue;
-            }
-            return Err("读音里有无法识别的字符");
-        }
-        if let Some(t) = combining_tone(c) {
-            tone.push(char::from(b'0' + t));
-            continue;
-        }
-        match tone_letter(c) {
-            Some((base, t)) => {
-                ascii.push(base);
-                if t > 0 {
-                    tone.push(char::from(b'0' + t));
-                }
-            }
-            None => return Err("读音里有无法识别的字符"),
-        }
-    }
-    if ascii.is_empty()
-        || ascii.len() > MAX_READING_CHARS
-        || !ascii.bytes().all(|b| b.is_ascii_lowercase())
-    {
-        return Err("读音不是拼音");
-    }
-    Ok(Reading {
-        ascii,
-        tone,
-        raw: raw.to_string(),
-    })
-}
-
-fn tone_letter(c: char) -> Option<(char, u8)> {
-    Some(match c {
-        'a' | 'A' => ('a', 0),
-        'ā' | 'Ā' => ('a', 1),
-        'á' | 'Á' => ('a', 2),
-        'ǎ' | 'Ǎ' => ('a', 3),
-        'à' | 'À' => ('a', 4),
-        'e' | 'E' => ('e', 0),
-        'ē' | 'Ē' => ('e', 1),
-        'é' | 'É' => ('e', 2),
-        'ě' | 'Ě' => ('e', 3),
-        'è' | 'È' => ('e', 4),
-        'i' | 'I' => ('i', 0),
-        'ī' | 'Ī' => ('i', 1),
-        'í' | 'Í' => ('i', 2),
-        'ǐ' | 'Ǐ' => ('i', 3),
-        'ì' | 'Ì' => ('i', 4),
-        'o' | 'O' => ('o', 0),
-        'ō' | 'Ō' => ('o', 1),
-        'ó' | 'Ó' => ('o', 2),
-        'ǒ' | 'Ǒ' => ('o', 3),
-        'ò' | 'Ò' => ('o', 4),
-        'u' | 'U' => ('u', 0),
-        'ū' | 'Ū' => ('u', 1),
-        'ú' | 'Ú' => ('u', 2),
-        'ǔ' | 'Ǔ' => ('u', 3),
-        'ù' | 'Ù' => ('u', 4),
-        'ü' | 'Ü' | 'v' | 'V' => ('v', 0),
-        'ǖ' | 'Ǖ' => ('v', 1),
-        'ǘ' | 'Ǘ' => ('v', 2),
-        'ǚ' | 'Ǚ' => ('v', 3),
-        'ǜ' | 'Ǜ' => ('v', 4),
-        'n' | 'N' => ('n', 0),
-        'ń' | 'Ń' => ('n', 2),
-        'ň' | 'Ň' => ('n', 3),
-        'ǹ' | 'Ǹ' => ('n', 4),
-        'm' | 'M' => ('m', 0),
-        'ḿ' | 'Ḿ' => ('m', 2),
-        'b' | 'B' => ('b', 0),
-        'c' | 'C' => ('c', 0),
-        'd' | 'D' => ('d', 0),
-        'f' | 'F' => ('f', 0),
-        'g' | 'G' => ('g', 0),
-        'h' | 'H' => ('h', 0),
-        'j' | 'J' => ('j', 0),
-        'k' | 'K' => ('k', 0),
-        'l' | 'L' => ('l', 0),
-        'p' | 'P' => ('p', 0),
-        'q' | 'Q' => ('q', 0),
-        'r' | 'R' => ('r', 0),
-        's' | 'S' => ('s', 0),
-        't' | 'T' => ('t', 0),
-        'w' | 'W' => ('w', 0),
-        'x' | 'X' => ('x', 0),
-        'y' | 'Y' => ('y', 0),
-        'z' | 'Z' => ('z', 0),
-        _ => return None,
-    })
-}
-
-fn combining_tone(c: char) -> Option<u8> {
-    Some(match c {
-        '\u{0304}' => 1,
-        '\u{0301}' => 2,
-        '\u{030c}' => 3,
-        '\u{0300}' => 4,
-        _ => return None,
-    })
-}
-
-fn has_han(s: &str) -> bool {
-    s.chars().any(|c| {
-        ('\u{3400}'..='\u{9FFF}').contains(&c)
-            || ('\u{F900}'..='\u{FAFF}').contains(&c)
-            || ('\u{20000}'..='\u{2CEAF}').contains(&c)
-            || c == '\u{3007}'
-    })
 }
 
 fn ascii_key(py: &str) -> Cow<'_, str> {
@@ -1737,6 +1573,29 @@ abc\tchang\t俄语\n\
     }
 
     #[test]
+    fn travel_dictionary_and_personal_trigger_reach_candidates() {
+        let combined = concat!(
+            include_str!("../../dictionaries/travel.tsv"),
+            "登机口\tmygate\tмой выход\t100\n",
+        );
+        let r = parse(combined, "登机口\tdengjikou\tмой выход на посадку\n");
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        let _guard = install(r.snap);
+
+        for (trigger, russian) in [
+            ("dengjikou", "мой выход на посадку"),
+            ("mygate", "мой выход"),
+            ("dengjipai", "посадочный талон"),
+        ] {
+            let hits = crate::dict::lookup(trigger);
+            assert!(
+                hits.iter().any(|hit| hit.exact && hit.ru == russian),
+                "missing {trigger}: {russian}"
+            );
+        }
+    }
+
+    #[test]
     fn lookup_nv_uses_user_gloss() {
         let r = parse("女\tnǚ\tЖЕНЩИНА_ТЕСТ\n", "");
         let _g = install(r.snap);
@@ -1758,7 +1617,7 @@ abc\tchang\t俄语\n\
     }
 
     #[test]
-    fn reload_respects_throttle_and_mtime() {
+    fn reload_updates_order_on_the_next_composition_without_waiting() {
         let tmp = Tmp::new();
         let mut state = LoadState::empty();
         poll(&mut state, &tmp.path, 1_000, true);
@@ -1773,21 +1632,22 @@ abc\tchang\t俄语\n\
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
 
         let dict = tmp.path.join(DICT_FILE);
-        std::fs::write(&dict, "甲\tjia\tОДИН\n").unwrap();
+        let order = |state: &LoadState| {
+            let mut hits = Vec::new();
+            merge_prepared(&mut hits, 0, &state.snap.words["jia"]);
+            hits.into_iter().map(|hit| hit.word).collect::<Vec<_>>()
+        };
+        std::fs::write(&dict, "甲\tjia\tОДИН\t200\n乙\tjia\tДВА\t200\n").unwrap();
         set_mtime(&dict, 10_000);
-        poll(&mut state, &tmp.path, 1_500, false);
-        assert!(state.snap.words.is_empty(), "一秒内不应因为改了文件就重读");
-        poll(&mut state, &tmp.path, 2_500, false);
-        assert!(state.snap.words.contains_key("jia"));
+        poll(&mut state, &tmp.path, 1_010, false);
+        assert_eq!(order(&state), ["甲", "乙"]);
+        poll(&mut state, &tmp.path, 1_020, false);
+        assert_eq!(order(&state), ["甲", "乙"]);
 
-        std::fs::write(&dict, "乙\tyi\tДВА\n").unwrap();
+        std::fs::write(&dict, "甲\tjia\tОДИН\t100\n乙\tjia\tДВА\t200\n").unwrap();
         set_mtime(&dict, 20_000);
-        poll(&mut state, &tmp.path, 3_000, false);
-        assert!(state.snap.words.contains_key("jia"));
-        assert!(!state.snap.words.contains_key("yi"));
-        poll(&mut state, &tmp.path, 4_500, false);
-        assert!(state.snap.words.contains_key("yi"));
-        assert!(!state.snap.words.contains_key("jia"));
+        poll(&mut state, &tmp.path, 1_030, false);
+        assert_eq!(order(&state), ["乙", "甲"]);
     }
 
     #[test]
@@ -1829,5 +1689,12 @@ abc\tchang\t俄语\n\
         );
         let text = std::fs::read_to_string(tmp.path.join(WARN_FILE)).unwrap();
         assert!(text.contains("不是文件") || text.contains("无法"), "{text}");
+        std::fs::remove_dir(&dict).unwrap();
+        std::fs::write(&dict, "乙\tyi\tДВА\n").unwrap();
+        set_mtime(&dict, 50_000); // 故意恢复旧时间，验证占用解除后仍会重读。
+        poll(&mut state, &tmp.path, 6_000, false);
+        assert!(state.snap.words.contains_key("yi"));
+        assert!(!state.snap.words.contains_key("jia"));
+        assert!(!tmp.path.join(WARN_FILE).exists());
     }
 }

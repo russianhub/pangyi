@@ -797,8 +797,7 @@ impl ITfKeyEventSink_Impl for TextService {
         // 字母：进组合（v4.14.0 插在光标处 —— ←/→ 移过光标后，字母从那里接着打）
         if let Some(ch) = letter {
             if crate::settings::english() { return Ok(BOOL(0)); }
-            // 缓冲从空到第一个字母 = 一次新的拼音。这时看用户词库改过没有，
-            // 大约一秒最多看一次文件时间，按键路径上不每次都读盘。
+            // 新拼写才检查用户词库和包，不在组合中每次按键都读盘。
             let starting = self.buf.borrow().is_empty();
             if starting {
                 crate::user_dict::on_composition_start();

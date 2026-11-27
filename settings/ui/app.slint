@@ -1,6 +1,11 @@
 // 旁译设置窗口。控件用 Fluent；候选预览用旁译自己的色，不把整窗染成强调色。
 // 默认字体用微软雅黑 UI，版本号用 Segoe UI Variable。中文不依赖软件渲染器的西文回落。
-import { AboutSlint, Button, Palette } from "std-widgets.slint";
+import { AboutSlint, Button, CheckBox, ComboBox, LineEdit, ListView, Palette, TextEdit } from "std-widgets.slint";
+
+export struct LexChoice {
+    label: string,
+    checked: bool,
+}
 
 export { Palette }
 
@@ -442,6 +447,47 @@ component ValueRow inherits Rectangle {
     }
 }
 
+component UndoLink inherits FocusScope {
+    callback activated();
+    min-width: caption.preferred-width + 12px;
+    min-height: 24px;
+    horizontal-stretch: 0;
+    accessible-role: button;
+    accessible-label: "撤销";
+    accessible-action-default => { root.activated(); }
+    key-pressed(event) => {
+        if event.text == Key.Return || event.text == " " {
+            root.activated();
+            return accept;
+        }
+        reject
+    }
+    Rectangle {
+        border-radius: 3px;
+        border-width: root.has-focus ? 1px : 0px;
+        border-color: Theme.fill;
+    }
+    caption := Text {
+        text: "撤销";
+        font-size: 12px;
+        color: Palette.foreground;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    Rectangle {
+        x: 6px;
+        y: root.height / 2 + 7px;
+        width: root.width - 12px;
+        height: 1px;
+        background: Palette.foreground;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.activated(); }
+    }
+}
+
 // 开关：接口和原来的 Switch 一样（checked 加 toggled），颜色跟配色走。
 component Toggle inherits Rectangle {
     in-out property <bool> checked;
@@ -766,6 +812,29 @@ export component MainWindow inherits Window {
     in property <string> version: "4.19.0";
     in-out property <int> page: 0;
     in-out property <string> status: "";
+    in property <bool> lex-keyboard-focus;
+    property <bool> lex-advanced-open;
+    property <string> empty-lex-label: root.lex-search == "" && root.lex-theme-index == 0 ? "还没有词条，可在下方添加" : "没有匹配的词条。";
+    property <string> lex-status;
+    property <string> lex-status-undo-id;
+    property <string> shown-status: root.page == 3 ? root.lex-status : root.status;
+
+    public function show-lex-status(message: string, undoable: bool) {
+        root.lex-status = message;
+        root.lex-status-undo-id = undoable ? root.lex-undo-id : "";
+        lex-status-timeout.start();
+        lex-status-timeout.restart();
+    }
+
+    lex-status-timeout := Timer {
+        interval: 8s;
+        running: false;
+        triggered => {
+            root.lex-status = "";
+            root.lex-status-undo-id = "";
+            self.stop();
+        }
+    }
 
     in-out property <int> max-index: 2;
     in-out property <int> scale-index: 1;
@@ -801,6 +870,51 @@ export component MainWindow inherits Window {
     in property <string> stat-gloss: "还没有";
     in property <string> stat-packs: "还没有";
     in property <string> stat-learned: "还没有";
+
+    in property <[string]> lex-labels;
+    in property <[string]> lex-themes;
+    in property <[LexChoice]> lex-choices;
+    in-out property <int> lex-theme-index: 0;
+    in-out property <string> lex-theme-filter;
+    in-out property <string> lex-theme;
+    in property <bool> lex-crowded;
+    in property <bool> lex-can-undo;
+    in property <string> lex-undo-id;
+    in property <string> lex-undo-label: "撤销";
+    in property <int> lex-selected-count;
+    property <bool> lex-bulk-open;
+    callback lex-mark(int, bool);
+    callback lex-delete-selected();
+    callback lex-undo();
+    callback lex-move-weight(bool);
+    callback lex-reading-changed();
+    in-out property <string> lex-search;
+    in-out property <int> lex-kind: 0;
+    in-out property <int> lex-index: 0;
+    in-out property <string> lex-head;
+    in-out property <string> lex-reading;
+    in-out property <string> lex-russian;
+    in-out property <string> lex-extra;
+    in property <bool> lex-editing;
+    callback lex-kind-changed();
+    callback lex-filter();
+    callback lex-select(int);
+    callback lex-clear();
+    callback lex-save();
+    callback lex-delete();
+    callback lex-import();
+    callback lex-add-pack(int);
+    callback lex-catalog();
+    callback lex-export();
+    callback lex-preview();
+    callback lex-confirm-import();
+    callback lex-cancel-import();
+    in-out property <int> lex-duplicate-policy: 0;
+    in property <bool> lex-preview-open;
+    in property <bool> lex-can-import;
+    in property <string> lex-preview-summary;
+    in property <string> lex-issues;
+    in property <string> lex-metadata;
 
     callback max-selected(int);
     callback scale-selected(int);
@@ -1219,103 +1333,382 @@ export component MainWindow inherits Window {
                     }
 
                     if root.page == 3: VerticalLayout {
-                        spacing: 20px;
+                        spacing: 14px;
                         alignment: start;
 
                         PageHeader {
                             title: "词库";
-                            subtitle: "你自己的短语、词条和表情包。这些文件只在这台电脑上。";
+                            subtitle: "用自己习惯的拼音，调出想要的中文和俄语释义。";
                         }
 
                         Card {
-                            title: "我的文件";
+                            title: "我的词条";
 
-                            Row {
-                                label: "自定义短语";
-                                desc: "用缩写快速打出常用的话";
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 10px;
 
-                                Button {
-                                    text: "打开短语文件";
-                                    horizontal-stretch: 0;
-                                    clicked => {
-                                        root.open-phrases();
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Hint {
+                                        text: "词库类型";
+                                        vertical-alignment: center;
+                                    }
+                                    ComboBox {
+                                        accessible-label: "词库类型";
+                                        model: ["自定义词条", "覆盖已有词的俄语"];
+                                        current-index <=> root.lex-kind;
+                                        selected => { root.lex-kind-changed(); }
+                                    }
+                                    Button {
+                                        text: "新增";
+                                        clicked => { root.lex-clear(); }
                                     }
                                 }
-                            }
 
-                            Row {
-                                label: "用户词库";
-                                desc: "补充输入法里没有的中文词";
-
-                                Button {
-                                    text: "打开用户词库";
-                                    horizontal-stretch: 0;
-                                    clicked => {
-                                        root.open-user-dict();
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    LineEdit {
+                                        text <=> root.lex-search;
+                                        placeholder-text: "搜索中文、拼音或俄语";
+                                        accessible-label: "搜索词条";
+                                        edited => { root.lex-filter(); }
+                                    }
+                                    ComboBox {
+                                        accessible-label: "按主题筛选";
+                                        model: root.lex-themes;
+                                        current-index <=> root.lex-theme-index;
+                                        selected(value) => {
+                                            root.lex-theme-filter = self.current-index > 0 ? value : "";
+                                            root.lex-filter();
+                                        }
                                     }
                                 }
-                            }
+                                ComboBox {
+                                    accessible-label: "选择已保存的词条";
+                                    accessible-description: self.enabled ? "" : empty-lex-label;
+                                    model: root.lex-labels;
+                                    current-index <=> root.lex-index;
+                                    enabled: root.lex-labels.length > 1;
+                                    selected => { root.lex-select(self.current-index); }
+                                }
+                                if root.lex-labels.length <= 1: Hint { text: empty-lex-label; }
 
-                            Row {
-                                label: "用户释义";
-                                desc: "改写或补充俄语释义";
-
-                                Button {
-                                    text: "打开用户释义";
-                                    horizontal-stretch: 0;
-                                    clicked => {
-                                        root.open-user-gloss();
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    LineEdit {
+                                        text <=> root.lex-head;
+                                        placeholder-text: "中文词头";
+                                        accessible-label: "中文词头";
+                                    }
+                                    LineEdit {
+                                        text <=> root.lex-reading;
+                                        placeholder-text: "触发拼音，例如 pengyou";
+                                        accessible-label: "触发拼音";
+                                        edited => { root.lex-reading-changed(); }
                                     }
                                 }
-                            }
-
-                            Row {
-                                label: "表情包";
-                                desc: "表情包文件所在的文件夹";
-                                divider: false;
-
-                                Button {
-                                    text: "打开表情包文件夹";
-                                    horizontal-stretch: 0;
-                                    clicked => {
-                                        root.open-packs();
+                                LineEdit {
+                                    text <=> root.lex-russian;
+                                    placeholder-text: root.lex-kind == 0 ? "俄语释义（可选）" : "要替换成的俄语释义";
+                                    accessible-label: "俄语释义";
+                                }
+                                if root.lex-crowded: Hint {
+                                    text: "这个拼音已有较多精确候选。可提高权重，或为新词选一个更好记的触发拼音。";
+                                }
+                                LineEdit {
+                                    text <=> root.lex-theme;
+                                    placeholder-text: "主题（可选）";
+                                    accessible-label: "词条主题";
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    if root.lex-kind == 0: LineEdit {
+                                        text <=> root.lex-extra;
+                                        input-type: decimal;
+                                        placeholder-text: "权重（默认 0）";
+                                        accessible-label: "候选权重";
+                                        accessible-description: "−9999 至 9999，留空为 0";
+                                        Tooltip { text: @markdown("−9999 至 9999，留空为 0"); }
+                                    }
+                                    if root.lex-kind != 0: LineEdit {
+                                        text <=> root.lex-extra;
+                                        placeholder-text: "备注（可选）";
+                                        accessible-label: "备注";
+                                    }
+                                    if root.lex-kind == 0: Button {
+                                        text: "最高权重";
+                                        clicked => { root.lex-extra = "9999"; }
+                                    }
+                                    if root.lex-kind == 0 && root.lex-editing: Button {
+                                        text: "上移";
+                                        clicked => { root.lex-move-weight(true); }
+                                    }
+                                    if root.lex-kind == 0 && root.lex-editing: Button {
+                                        text: "下移";
+                                        clicked => { root.lex-move-weight(false); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+                                    Button {
+                                        text: root.lex-editing ? "保存修改" : "添加词条";
+                                        primary: true;
+                                        clicked => { root.lex-save(); }
+                                    }
+                                    if root.lex-editing: Button {
+                                        text: "删除词条";
+                                        clicked => { root.lex-delete(); }
                                     }
                                 }
                             }
                         }
 
                         Card {
-                            title: "本机条数";
+                            title: "批量管理";
 
-                            ValueRow {
-                                label: "自定义短语";
-                                value: root.stat-phrases;
+                            VerticalLayout {
+                                padding: 10px;
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+                                    Button {
+                                        text: root.lex-bulk-open ? "收起多选" : "多选词条";
+                                        clicked => { root.lex-bulk-open = !root.lex-bulk-open; }
+                                    }
+                                    Button {
+                                        text: root.lex-undo-label;
+                                        enabled: root.lex-can-undo;
+                                        clicked => { root.lex-undo(); }
+                                    }
+                                    Button {
+                                        text: "一键导出备份";
+                                        clicked => { root.lex-export(); }
+                                    }
+                                }
+                                if root.lex-bulk-open: ListView {
+                                    height: 180px;
+                                    for choice[index] in root.lex-choices: CheckBox {
+                                        text: choice.label;
+                                        checked: choice.checked;
+                                        toggled => { root.lex-mark(index, self.checked); }
+                                    }
+                                }
+                                if root.lex-bulk-open: Button {
+                                    text: "删除已选 " + root.lex-selected-count + " 条";
+                                    enabled: root.lex-selected-count > 0;
+                                    clicked => { root.lex-delete-selected(); }
+                                }
                             }
+                        }
 
-                            ValueRow {
-                                label: "用户词库";
-                                value: root.stat-dict;
+                        Card {
+                            title: "词典导入";
+
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 10px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Rectangle {
+                                        min-width: pack.min-width;
+                                        min-height: pack.min-height;
+                                        horizontal-stretch: 1;
+
+                                        // Keep the Fluent control and clip its fixed black focus outline.
+                                        Rectangle {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            clip: true;
+                                            border-width: pack.has-focus ? 3px : 0px;
+                                            border-color: transparent;
+                                            pack := ComboBox {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                accessible-label: "主题词典";
+                                                model: ["出行俄语", "点餐俄语", "办公俄语"];
+                                            }
+                                        }
+                                        if pack.has-focus: Rectangle {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            border-width: 1px;
+                                            border-radius: 3px;
+                                            border-color: Palette.foreground.with-alpha(root.lex-keyboard-focus ? 0.7 : 0.1);
+                                        }
+                                    }
+                                    Button {
+                                        text: "加入我的词条";
+                                        clicked => { root.lex-add-pack(pack.current-index); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 8px;
+                                    Button {
+                                        text: "导入 TSV 文件";
+                                        clicked => { root.lex-import(); }
+                                    }
+                                    Button {
+                                        text: "打开下载目录";
+                                        clicked => { root.lex-catalog(); }
+                                    }
+                                }
+                                Hint {
+                                    text: "主题词典加入自定义词条。本地 TSV 使用打开文件时选中的词库类型。";
+                                }
+                                if root.lex-preview-open: VerticalLayout {
+                                    spacing: 8px;
+                                    ComboBox {
+                                        accessible-label: "重复词条处理方式";
+                                        model: ["跳过重复", "覆盖重复", "合并俄语释义"];
+                                        current-index <=> root.lex-duplicate-policy;
+                                        selected => { root.lex-preview(); }
+                                    }
+                                    if root.lex-metadata != "": Hint { text: root.lex-metadata; }
+                                    Hint { text: root.lex-preview-summary; }
+                                    if root.lex-issues != "": TextEdit {
+                                        text: root.lex-issues;
+                                        read-only: true;
+                                        height: 116px;
+                                        accessible-label: "跳过的行和原因";
+                                    }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 8px;
+                                        Button {
+                                            text: "确认导入";
+                                            primary: true;
+                                            enabled: root.lex-can-import;
+                                            clicked => { root.lex-confirm-import(); }
+                                        }
+                                        Button {
+                                            text: "取消";
+                                            clicked => { root.lex-cancel-import(); }
+                                        }
+                                    }
+                                }
                             }
+                        }
 
-                            ValueRow {
-                                label: "用户释义";
-                                value: root.stat-gloss;
-                            }
-
-                            ValueRow {
-                                label: "表情包";
-                                value: root.stat-packs;
-                            }
-
-                            ValueRow {
-                                label: "自学习";
-                                value: root.stat-learned;
+                        Card {
+                            title: "词库备份";
+                            Row {
+                                label: "备份包含自定义词条和俄语释义覆盖";
                                 divider: false;
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 12px;
+                            alignment: start;
+                            HorizontalLayout {
+                                alignment: start;
+                                Button {
+                                    text: root.lex-advanced-open ? "高级（收起）" : "高级（展开）";
+                                    accessible-label: "高级";
+                                    accessible-expandable: true;
+                                    accessible-expanded: root.lex-advanced-open;
+                                    accessible-action-expand => { root.lex-advanced-open = true; }
+                                    clicked => { root.lex-advanced-open = !root.lex-advanced-open; }
+                                }
+                            }
+                            if root.lex-advanced-open: VerticalLayout {
+                                spacing: 14px;
+                                Card {
+                                    title: "本机文件";
+
+                                    Row {
+                                        label: "自定义短语";
+                                        desc: "用缩写快速打出常用的话";
+
+                                        Button {
+                                            text: "打开短语文件";
+                                            horizontal-stretch: 0;
+                                            clicked => {
+                                                root.open-phrases();
+                                            }
+                                        }
+                                    }
+
+                                    Row {
+                                        label: "用户词库";
+                                        desc: "补充输入法里没有的中文词";
+
+                                        Button {
+                                            text: "打开用户词库";
+                                            horizontal-stretch: 0;
+                                            clicked => {
+                                                root.open-user-dict();
+                                            }
+                                        }
+                                    }
+
+                                    Row {
+                                        label: "用户释义";
+                                        desc: "改写或补充俄语释义";
+
+                                        Button {
+                                            text: "打开用户释义";
+                                            horizontal-stretch: 0;
+                                            clicked => {
+                                                root.open-user-gloss();
+                                            }
+                                        }
+                                    }
+
+                                    Row {
+                                        label: "表情包";
+                                        desc: "表情包文件所在的文件夹";
+                                        divider: false;
+
+                                        Button {
+                                            text: "打开表情包文件夹";
+                                            horizontal-stretch: 0;
+                                            clicked => {
+                                                root.open-packs();
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Card {
+                                    title: "本机条数";
+
+                                    ValueRow {
+                                        label: "自定义短语";
+                                        value: root.stat-phrases;
+                                    }
+
+                                    ValueRow {
+                                        label: "用户词库";
+                                        value: root.stat-dict;
+                                    }
+
+                                    ValueRow {
+                                        label: "用户释义";
+                                        value: root.stat-gloss;
+                                    }
+
+                                    ValueRow {
+                                        label: "表情包";
+                                        value: root.stat-packs;
+                                    }
+
+                                    Row {
+                                        label: "自学习";
+                                        desc: "输入法会记住选过的词，下次优先显示。";
+                                        divider: false;
+                                        Hint { text: root.stat-learned; }
+                                    }
+                                }
                             }
                         }
 
                         Hint {
-                            text: "内置词库的条数在输入法里，本程序不内嵌词库。";
+                            text: "在输入法里重新输入完整拼音，查看保存后的候选。";
                         }
                     }
 
@@ -1454,9 +1847,10 @@ export component MainWindow inherits Window {
                 }
             }
 
-            if root.status != "": Rectangle {
+            Rectangle {
                 vertical-stretch: 0;
-                height: 36px;
+                height: root.shown-status == "" ? 0px : 36px;
+                clip: true;
                 background: Palette.alternate-background;
 
                 Rectangle {
@@ -1465,15 +1859,26 @@ export component MainWindow inherits Window {
                     background: Palette.border;
                 }
 
-                Text {
-                    x: 32px;
-                    width: parent.width - 64px;
-                    text: root.status;
-                    font-family: "Microsoft YaHei UI";
-                    font-size: 12px;
-                    overflow: elide;
-                    vertical-alignment: center;
-                    color: Palette.foreground;
+                HorizontalLayout {
+                    padding-left: 32px;
+                    padding-right: 32px;
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: root.shown-status;
+                        font-family: "Microsoft YaHei UI";
+                        font-size: 12px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        color: Palette.foreground;
+                        accessible-role: text;
+                        accessible-label: self.text;
+                        accessible-live-region: polite;
+                    }
+                    if root.page == 3 && root.lex-can-undo && root.lex-status-undo-id != "" && root.lex-status-undo-id == root.lex-undo-id: UndoLink {
+                        cross-axis-self-alignment: center;
+                        activated => { root.lex-undo(); }
+                    }
                 }
             }
         }
