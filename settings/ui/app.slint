@@ -1,6 +1,11 @@
 // 旁译设置窗口。控件用 Fluent；候选预览用旁译自己的色，不把整窗染成强调色。
 // 默认字体用微软雅黑 UI，版本号用 Segoe UI Variable。中文不依赖软件渲染器的西文回落。
-import { AboutSlint, Button, ComboBox, LineEdit, Palette, TextEdit } from "std-widgets.slint";
+import { AboutSlint, Button, CheckBox, ComboBox, LineEdit, ListView, Palette, TextEdit } from "std-widgets.slint";
+
+export struct LexChoice {
+    label: string,
+    checked: bool,
+}
 
 export { Palette }
 
@@ -803,6 +808,19 @@ export component MainWindow inherits Window {
     in property <string> stat-learned: "还没有";
 
     in property <[string]> lex-labels;
+    in property <[string]> lex-themes;
+    in property <[LexChoice]> lex-choices;
+    in-out property <int> lex-theme-index: 0;
+    in-out property <string> lex-theme-filter;
+    in-out property <string> lex-theme;
+    in property <bool> lex-crowded;
+    in property <bool> lex-can-undo;
+    in property <int> lex-selected-count;
+    property <bool> lex-bulk-open;
+    callback lex-mark(int, bool);
+    callback lex-delete-selected();
+    callback lex-undo();
+    callback lex-reading-changed();
     in-out property <string> lex-search;
     in-out property <int> lex-kind: 0;
     in-out property <int> lex-index: 0;
@@ -1276,11 +1294,23 @@ export component MainWindow inherits Window {
                                     }
                                 }
 
-                                LineEdit {
-                                    text <=> root.lex-search;
-                                    placeholder-text: "搜索中文、拼音或俄语";
-                                    accessible-label: "搜索词条";
-                                    edited => { root.lex-filter(); }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    LineEdit {
+                                        text <=> root.lex-search;
+                                        placeholder-text: "搜索中文、拼音或俄语";
+                                        accessible-label: "搜索词条";
+                                        edited => { root.lex-filter(); }
+                                    }
+                                    ComboBox {
+                                        accessible-label: "按主题筛选";
+                                        model: root.lex-themes;
+                                        current-index <=> root.lex-theme-index;
+                                        selected(value) => {
+                                            root.lex-theme-filter = self.current-index > 0 ? value : "";
+                                            root.lex-filter();
+                                        }
+                                    }
                                 }
                                 ComboBox {
                                     accessible-label: "选择词条";
@@ -1304,6 +1334,7 @@ export component MainWindow inherits Window {
                                         text <=> root.lex-reading;
                                         placeholder-text: "触发拼音，例如 pengyou";
                                         accessible-label: "触发拼音";
+                                        edited => { root.lex-reading-changed(); }
                                     }
                                 }
                                 LineEdit {
@@ -1311,10 +1342,25 @@ export component MainWindow inherits Window {
                                     placeholder-text: root.lex-kind == 0 ? "俄语释义（可选）" : "要替换成的俄语释义";
                                     accessible-label: "俄语释义";
                                 }
+                                if root.lex-crowded: Hint {
+                                    text: "这个拼音已有较多精确候选。可提高权重，或为新词选一个更好记的触发拼音。";
+                                }
                                 LineEdit {
+                                    text <=> root.lex-theme;
+                                    placeholder-text: "主题（可选）";
+                                    accessible-label: "词条主题";
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    LineEdit {
                                     text <=> root.lex-extra;
                                     placeholder-text: root.lex-kind == 0 ? "权重（可选，100 可排在内置精确首选前）" : "备注（可选）";
                                     accessible-label: root.lex-kind == 0 ? "候选权重" : "备注";
+                                    }
+                                    if root.lex-kind == 0: Button {
+                                        text: "最高权重";
+                                        clicked => { root.lex-extra = "9999"; }
+                                    }
                                 }
                                 HorizontalLayout {
                                     spacing: 8px;
@@ -1328,6 +1374,41 @@ export component MainWindow inherits Window {
                                         text: "删除词条";
                                         clicked => { root.lex-delete(); }
                                     }
+                                }
+                            }
+                        }
+
+                        Card {
+                            title: "批量管理";
+
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+                                    Button {
+                                        text: root.lex-bulk-open ? "收起多选" : "多选词条";
+                                        clicked => { root.lex-bulk-open = !root.lex-bulk-open; }
+                                    }
+                                    Button {
+                                        text: "撤销最近删除或导入";
+                                        enabled: root.lex-can-undo;
+                                        clicked => { root.lex-undo(); }
+                                    }
+                                }
+                                if root.lex-bulk-open: ListView {
+                                    height: 180px;
+                                    for choice[index] in root.lex-choices: CheckBox {
+                                        text: choice.label;
+                                        checked: choice.checked;
+                                        toggled => { root.lex-mark(index, self.checked); }
+                                    }
+                                }
+                                if root.lex-bulk-open: Button {
+                                    text: "删除已选 " + root.lex-selected-count + " 条";
+                                    enabled: root.lex-selected-count > 0;
+                                    clicked => { root.lex-delete-selected(); }
                                 }
                             }
                         }

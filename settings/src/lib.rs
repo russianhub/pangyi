@@ -16,8 +16,9 @@ pub use colors::{
     ACCENTS, ANNO_PX, INDEX_PX, TEXT_PX,
 };
 pub use lexicon::{
-    commit_import, edit_lexicon, export_backup, lexicon_entries, preview_import, read_import, DuplicatePolicy,
-    ImportPreview, LexiconEntry, LexiconKind,
+    commit_import, crowded_reading, delete_entries, edit_lexicon, export_backup, lexicon_entries,
+    preview_import, read_import, undo_change, DuplicatePolicy, ImportPreview, LexiconEntry,
+    LexiconKind, UndoChange,
 };
 pub use local_files::{
     count_data_lines, count_pack_files, ensure_phrases_file, existing_file_or_dir, format_count,

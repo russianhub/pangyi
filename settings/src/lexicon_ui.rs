@@ -1,14 +1,16 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use pangyi_settings::{
-    commit_import, edit_lexicon, export_backup, lexicon_entries, load_counts, preview_import,
-    read_import, DuplicatePolicy, ImportPreview, LexiconEntry, LexiconKind,
+    commit_import, crowded_reading, delete_entries, edit_lexicon, export_backup, lexicon_entries,
+    load_counts, preview_import, read_import, undo_change, DuplicatePolicy, ImportPreview,
+    LexiconEntry, LexiconKind, UndoChange,
 };
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::MainWindow;
+use crate::{LexChoice, MainWindow};
 
 const THEMES: [&str; 3] = [
     include_str!("../../dictionaries/travel.tsv"),
@@ -20,34 +22,69 @@ const THEMES: [&str; 3] = [
 struct Editor {
     visible: Vec<LexiconEntry>,
     original: Option<LexiconEntry>,
-    import: Option<(LexiconKind, Vec<u8>)>,
+    import: Option<(LexiconKind, Vec<u8>, String)>,
+    undo: Option<UndoChange>,
+    all: Vec<LexiconEntry>,
+    selected: HashSet<LexiconEntry>,
     preview: Option<ImportPreview>,
 }
 
 pub(super) fn wire(ui: &MainWindow, dir: &Path) {
     let editor = Rc::new(RefCell::new(Editor::default()));
+    let choices = Rc::new(VecModel::<LexChoice>::default());
+    ui.set_lex_choices(ModelRc::from(choices.clone()));
 
     let weak = ui.as_weak();
     let state = editor.clone();
     let folder = dir.to_path_buf();
+    let list = choices.clone();
     ui.on_lex_filter(move || {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = state.borrow_mut();
         match lexicon_entries(&folder, kind(&ui)) {
             Ok(mut entries) => {
+                state.all = entries.clone();
+                let live: HashSet<_> = entries.iter().collect();
+                state.selected.retain(|entry| live.contains(entry));
+                let mut themes: Vec<_> = entries
+                    .iter()
+                    .filter(|row| !row.theme.is_empty())
+                    .map(|row| row.theme.clone())
+                    .collect();
+                themes.sort_unstable();
+                themes.dedup();
+                let old = ui.get_lex_theme_filter();
+                let names = std::iter::once(SharedString::from("所有主题"))
+                    .chain(themes.into_iter().map(Into::into))
+                    .collect::<Vec<_>>();
+                let theme_index = names
+                    .iter()
+                    .skip(1)
+                    .position(|name| name == &old)
+                    .map_or(0, |index| index + 1);
+                let theme = if theme_index > 0 {
+                    names[theme_index].as_str()
+                } else {
+                    ""
+                };
                 let search = ui.get_lex_search().trim().to_lowercase();
-                if !search.is_empty() {
-                    entries.retain(|row| {
-                        [&row.head, &row.reading, &row.russian]
-                            .iter()
-                            .any(|field| field.to_lowercase().contains(&search))
-                            || row.trigger().contains(&search)
-                    });
-                }
+                entries.retain(|row| {
+                    (theme.is_empty() || row.theme == theme)
+                        && (search.is_empty()
+                            || [&row.head, &row.reading, &row.russian]
+                                .iter()
+                                .any(|field| field.to_lowercase().contains(&search))
+                            || row.trigger().contains(&search))
+                });
+                ui.set_lex_theme_filter(theme.into());
+                ui.set_lex_themes(ModelRc::new(VecModel::from(names)));
+                ui.set_lex_theme_index(theme_index as i32);
                 state.visible = entries;
             }
             Err(error) => {
                 state.visible.clear();
+                state.all.clear();
+                state.selected.clear();
                 ui.set_status(format!("无法读取词库：{error}").into());
             }
         }
@@ -62,6 +99,18 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
                 format!("{} · {reading} · {}", row.head, row.russian).into()
             }))
             .collect();
+        list.set_vec(
+            state
+                .visible
+                .iter()
+                .zip(labels.iter().skip(1))
+                .map(|(row, label)| LexChoice {
+                    label: label.clone(),
+                    checked: state.selected.contains(row),
+                })
+                .collect::<Vec<_>>(),
+        );
+        ui.set_lex_selected_count(state.selected.len() as i32);
         ui.set_lex_labels(ModelRc::new(VecModel::from(labels)));
         ui.set_lex_index(0);
     });
@@ -88,16 +137,54 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             state.borrow_mut().original = None;
             set_fields(&ui, &LexiconEntry::default());
             ui.set_lex_editing(false);
+            ui.set_lex_crowded(false);
             ui.set_lex_index(0);
         }
     });
 
     let weak = ui.as_weak();
+    let state = editor.clone();
     ui.on_lex_kind_changed(move || {
         if let Some(ui) = weak.upgrade() {
+            state.borrow_mut().selected.clear();
+            ui.set_lex_theme_filter("".into());
             ui.invoke_lex_clear();
             ui.invoke_lex_filter();
         }
+    });
+
+    let weak = ui.as_weak();
+    let state = editor.clone();
+    ui.on_lex_reading_changed(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_lex_crowded(
+                kind(&ui) == LexiconKind::Words
+                    && !ui.get_lex_editing()
+                    && crowded_reading(ui.get_lex_reading().as_str(), &state.borrow().all),
+            );
+        }
+    });
+
+    let weak = ui.as_weak();
+    let state = editor.clone();
+    let list = choices;
+    ui.on_lex_mark(move |index, checked| {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut state = state.borrow_mut();
+        let Some(entry) = state.visible.get(index as usize).cloned() else {
+            return;
+        };
+        if checked && !state.selected.contains(&entry) {
+            state.selected.insert(entry);
+        } else if !checked {
+            state.selected.remove(&entry);
+        }
+        let Some(mut row) = list.row_data(index as usize) else {
+            return;
+        };
+        row.checked = checked;
+        list.set_row_data(index as usize, row);
+        ui.set_lex_selected_count(state.selected.len() as i32);
     });
 
     let weak = ui.as_weak();
@@ -110,11 +197,12 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             reading: ui.get_lex_reading().into(),
             russian: ui.get_lex_russian().into(),
             extra: ui.get_lex_extra().into(),
+            theme: ui.get_lex_theme().into(),
         };
         let original = state.borrow().original.clone();
         match edit_lexicon(&folder, kind(&ui), original.as_ref(), Some(replacement)) {
             Ok(()) => {
-                ui.set_status("词条已保存。请重新输入完整拼音查看候选。".into());
+                ui.set_status("词条已保存，已生效，无需重启。请重新输入拼音查看候选。".into());
                 ui.invoke_lex_clear();
                 refresh(&ui, &folder);
             }
@@ -122,21 +210,59 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
         }
     });
 
+    for bulk in [false, true] {
+        let weak = ui.as_weak();
+        let state = editor.clone();
+        let folder = dir.to_path_buf();
+        let delete = move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let selected = {
+                let state = state.borrow();
+                if bulk {
+                    state.selected.iter().cloned().collect::<Vec<_>>()
+                } else {
+                    state.original.iter().cloned().collect()
+                }
+            };
+            match delete_entries(&folder, kind(&ui), &selected) {
+                Ok(change) => {
+                    state.borrow_mut().undo = Some(change);
+                    ui.set_lex_can_undo(true);
+                    ui.set_status(format!("已删除 {} 条词条，可撤销。", selected.len()).into());
+                    ui.invoke_lex_clear();
+                    refresh(&ui, &folder);
+                }
+                Err(error) => ui.set_status(format!("词条未删除：{error}").into()),
+            }
+        };
+        if bulk {
+            ui.on_lex_delete_selected(delete);
+        } else {
+            ui.on_lex_delete(delete);
+        }
+    }
+
     let weak = ui.as_weak();
     let state = editor.clone();
     let folder = dir.to_path_buf();
-    ui.on_lex_delete(move || {
+    ui.on_lex_undo(move || {
         let Some(ui) = weak.upgrade() else { return };
-        let Some(original) = state.borrow().original.clone() else {
-            return;
+        let result = {
+            let state = state.borrow();
+            let Some(change) = state.undo.as_ref() else {
+                return;
+            };
+            undo_change(&folder, change)
         };
-        match edit_lexicon(&folder, kind(&ui), Some(&original), None) {
+        match result {
             Ok(()) => {
-                ui.set_status("已删除所选词条。".into());
+                state.borrow_mut().undo = None;
+                ui.set_lex_can_undo(false);
                 ui.invoke_lex_clear();
+                ui.set_status("已撤销最近一次删除或导入，无需重启。".into());
                 refresh(&ui, &folder);
             }
-            Err(error) => ui.set_status(format!("词条未删除：{error}").into()),
+            Err(error) => ui.set_status(format!("无法撤销：{error}").into()),
         }
     });
 
@@ -149,7 +275,7 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
                 .transpose()
                 .map_err(|err| err.to_string())
         }) {
-            Ok(Some(bytes)) => start_import(&ui, &state, kind(&ui), bytes),
+            Ok(Some(bytes)) => start_import(&ui, &state, kind(&ui), bytes, "文件导入"),
             Ok(None) => {}
             Err(error) => ui.set_status(format!("无法读取导入文件：{error}").into()),
         }
@@ -160,7 +286,13 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
     ui.on_lex_add_pack(move |index| {
         let Some(ui) = weak.upgrade() else { return };
         if let Some(text) = THEMES.get(index as usize) {
-            start_import(&ui, &state, LexiconKind::Words, text.as_bytes().to_vec());
+            start_import(
+                &ui,
+                &state,
+                LexiconKind::Words,
+                text.as_bytes().to_vec(),
+                ["出行俄语", "点餐俄语", "办公俄语"][index as usize],
+            );
         }
     });
 
@@ -170,7 +302,7 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
     ui.on_lex_preview(move || {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = state.borrow_mut();
-        let Some((kind, bytes)) = state.import.as_ref() else {
+        let Some((kind, bytes, theme)) = state.import.as_ref() else {
             return;
         };
         let policy = match ui.get_lex_duplicate_policy() {
@@ -178,7 +310,7 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             2 => DuplicatePolicy::Merge,
             _ => DuplicatePolicy::Skip,
         };
-        state.preview = match preview_import(&folder, *kind, bytes, policy) {
+        state.preview = match preview_import(&folder, *kind, bytes, policy, theme) {
             Ok(plan) => {
                 ui.set_lex_preview_summary(
                     format!(
@@ -223,9 +355,13 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             commit_import(&folder, plan)
         };
         match result {
-            Ok(()) => {
+            Ok(change) => {
+                if let Some(change) = change {
+                    state.borrow_mut().undo = Some(change);
+                    ui.set_lex_can_undo(true);
+                }
                 ui.invoke_lex_cancel_import();
-                ui.set_status("词典已导入。重新输入拼音查看候选。".into());
+                ui.set_status("词典已导入，已生效，无需重启。".into());
                 refresh(&ui, &folder);
             }
             Err(error) => {
@@ -270,6 +406,8 @@ fn set_fields(ui: &MainWindow, entry: &LexiconEntry) {
     ui.set_lex_reading(entry.reading.as_str().into());
     ui.set_lex_russian(entry.russian.as_str().into());
     ui.set_lex_extra(entry.extra.as_str().into());
+    ui.set_lex_theme(entry.theme.as_str().into());
+    ui.set_lex_crowded(false);
 }
 
 fn refresh(ui: &MainWindow, folder: &Path) {
@@ -277,8 +415,14 @@ fn refresh(ui: &MainWindow, folder: &Path) {
     crate::push_stats(ui, &load_counts(folder));
 }
 
-fn start_import(ui: &MainWindow, state: &RefCell<Editor>, kind: LexiconKind, bytes: Vec<u8>) {
-    state.borrow_mut().import = Some((kind, bytes));
+fn start_import(
+    ui: &MainWindow,
+    state: &RefCell<Editor>,
+    kind: LexiconKind,
+    bytes: Vec<u8>,
+    theme: &str,
+) {
+    state.borrow_mut().import = Some((kind, bytes, theme.into()));
     ui.set_lex_duplicate_policy(0);
     ui.set_lex_preview_open(true);
     ui.invoke_lex_preview();
