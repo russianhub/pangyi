@@ -245,16 +245,15 @@ pub fn commit_key(dir: &Path, key: &str, value: &str) -> io::Result<()> {
                 "settings.txt 不是合法的 UTF-8，没有写回",
             ));
         }
-        // 文件还不存在时写出全部已知键。旧的 layout.txt 若是横排，要写进 layout，
-        // 不能用默认的竖排把已经生效的横排盖掉。
-        TextFile::Missing => seed_missing(dir)?,
-        TextFile::Text(text) => text,
+        TextFile::Text(text) if !is_blank(&text) => text,
+        // 文件不存在或全是空白时写出全部已知键，并保留旧 layout.txt 的横排。
+        TextFile::Missing | TextFile::Text(_) => seed_settings(dir)?,
     };
     let body = apply_one_key(&original, key, value)?;
     write_atomic(&path, &body)
 }
 
-fn seed_missing(dir: &Path) -> io::Result<String> {
+fn seed_settings(dir: &Path) -> io::Result<String> {
     let horizontal = match read_text_file(&dir.join("layout.txt"))? {
         TextFile::Text(text) => text.trim().eq_ignore_ascii_case("h"),
         _ => false,
@@ -599,6 +598,25 @@ emoji=1
         assert!(text.contains("layout=h\n"), "{text}");
         assert!(text.contains("max=5\n"), "{text}");
         assert!(!text.contains("layout=v"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blank_settings_file_keeps_legacy_horizontal_layout() {
+        let dir = test_dir("blank-layout");
+        fs::write(dir.join("layout.txt"), "h\r\n").unwrap();
+        fs::write(settings_path(&dir), "  \r\n\t\r\n").unwrap();
+
+        commit_key(&dir, "emoji", "1").unwrap();
+        let settings = load_dir(&dir).unwrap().settings;
+        assert!(settings.horizontal);
+        assert!(settings.emoji);
+        assert!(fs::read_to_string(settings_path(&dir))
+            .unwrap()
+            .contains("layout=h\n"));
+
+        commit_key(&dir, "layout", "v").unwrap();
+        assert!(!load_dir(&dir).unwrap().settings.horizontal);
         let _ = fs::remove_dir_all(&dir);
     }
 
