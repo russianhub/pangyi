@@ -4,7 +4,7 @@
 //! - `user-dict.tsv`：添加词（词头、拼音、可选俄语、可选权重）
 //! - `user-gloss.tsv`：改已有词的整条俄语
 //!
-//! 启动时读一次。新的一次拼音开始时再看文件修改时间，大约一秒最多看一次。
+//! 启动时读一次。每次新拼音检查用户词条时间，释义覆盖按约一秒间隔检查。
 //! 坏行跳过，不让输入法崩溃；最近的警告写在 `user-dict-warnings.txt`。
 //! 这里不用 Windows API，方便单测。真正的按键和候选窗仍在 `lib.rs` / `dict.rs`。
 
@@ -198,7 +198,7 @@ pub(crate) fn load_at_startup() {
     poll(&mut g, &dir, now_ms(), true);
 }
 
-/// 一次新的拼音开始时调用（缓冲从空变成第一个字母）。间隔不够就什么都不做。
+/// 一次新的拼音开始时检查词库时间，发现保存就重载。
 pub(crate) fn on_composition_start() {
     let dir = user_dir();
     let mut g = store().lock().unwrap_or_else(|e| e.into_inner());
@@ -213,16 +213,20 @@ fn now_ms() -> u64 {
 }
 
 fn poll(state: &mut LoadState, dir: &Path, now: u64, force: bool) {
-    if state.loaded && !force && now.saturating_sub(state.last_check_ms) < CHECK_INTERVAL_MS {
+    let dict_path = dir.join(DICT_FILE);
+    // A settings save can change ranking even between two very close compositions.
+    let dict_mtime = mtime(&dict_path);
+    if state.loaded && !force && dict_mtime == state.dict_mtime
+        && now.saturating_sub(state.last_check_ms) < CHECK_INTERVAL_MS
+    {
         return;
     }
     state.last_check_ms = now;
-    let dict_path = dir.join(DICT_FILE);
     let gloss_path = dir.join(GLOSS_FILE);
     let mut warnings = Vec::new();
     ensure_template(&dict_path, DICT_TEMPLATE, &mut warnings);
     ensure_template(&gloss_path, GLOSS_TEMPLATE, &mut warnings);
-    let dict_mtime = mtime(&dict_path);
+    let dict_mtime = dict_mtime.or_else(|| mtime(&dict_path));
     let gloss_mtime = mtime(&gloss_path);
     if state.loaded && !force && !state.retry_pending
         && state.dict_mtime == dict_mtime && state.gloss_mtime == gloss_mtime
@@ -253,6 +257,7 @@ fn poll(state: &mut LoadState, dir: &Path, now: u64, force: bool) {
             // 读失败时留着上一份，避免用户正保存文件时把词库清空。
             state.loaded = true;
             state.retry_pending = true;
+            state.dict_mtime = dict_mtime;
             write_warnings(dir, &warnings);
             crate::log("user-dict 读取失败，继续用上一份");
         }
@@ -1612,7 +1617,7 @@ abc\tchang\t俄语\n\
     }
 
     #[test]
-    fn reload_respects_throttle_and_mtime() {
+    fn reload_updates_order_on_the_next_composition_without_waiting() {
         let tmp = Tmp::new();
         let mut state = LoadState::empty();
         poll(&mut state, &tmp.path, 1_000, true);
@@ -1627,21 +1632,22 @@ abc\tchang\t俄语\n\
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
 
         let dict = tmp.path.join(DICT_FILE);
-        std::fs::write(&dict, "甲\tjia\tОДИН\n").unwrap();
+        let order = |state: &LoadState| {
+            let mut hits = Vec::new();
+            merge_prepared(&mut hits, 0, &state.snap.words["jia"]);
+            hits.into_iter().map(|hit| hit.word).collect::<Vec<_>>()
+        };
+        std::fs::write(&dict, "甲\tjia\tОДИН\t200\n乙\tjia\tДВА\t200\n").unwrap();
         set_mtime(&dict, 10_000);
-        poll(&mut state, &tmp.path, 1_500, false);
-        assert!(state.snap.words.is_empty(), "一秒内不应因为改了文件就重读");
-        poll(&mut state, &tmp.path, 2_500, false);
-        assert!(state.snap.words.contains_key("jia"));
+        poll(&mut state, &tmp.path, 1_010, false);
+        assert_eq!(order(&state), ["甲", "乙"]);
+        poll(&mut state, &tmp.path, 1_020, false);
+        assert_eq!(order(&state), ["甲", "乙"]);
 
-        std::fs::write(&dict, "乙\tyi\tДВА\n").unwrap();
+        std::fs::write(&dict, "甲\tjia\tОДИН\t100\n乙\tjia\tДВА\t200\n").unwrap();
         set_mtime(&dict, 20_000);
-        poll(&mut state, &tmp.path, 3_000, false);
-        assert!(state.snap.words.contains_key("jia"));
-        assert!(!state.snap.words.contains_key("yi"));
-        poll(&mut state, &tmp.path, 4_500, false);
-        assert!(state.snap.words.contains_key("yi"));
-        assert!(!state.snap.words.contains_key("jia"));
+        poll(&mut state, &tmp.path, 1_030, false);
+        assert_eq!(order(&state), ["乙", "甲"]);
     }
 
     #[test]

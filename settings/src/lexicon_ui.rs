@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use pangyi_settings::{
     commit_import, crowded_reading, delete_entries, edit_lexicon, export_backup, lexicon_entries,
-    load_counts, preview_import, read_import, undo_change, DuplicatePolicy, ImportPreview,
-    LexiconEntry, LexiconKind, UndoChange,
+    load_counts, move_weight, preview_import, read_import, undo_change, DuplicatePolicy,
+    ImportPreview, LexiconEntry, LexiconKind, UndoChange,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -210,6 +210,36 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
         }
     });
 
+    let weak = ui.as_weak();
+    let state = editor.clone();
+    let folder = dir.to_path_buf();
+    ui.on_lex_move_weight(move |up| {
+        let Some(ui) = weak.upgrade() else { return };
+        let Some(original) = state.borrow().original.clone() else {
+            return;
+        };
+        if kind(&ui) != LexiconKind::Words
+            || original.head != ui.get_lex_head().as_str()
+            || original.reading != ui.get_lex_reading().as_str()
+            || original.russian != ui.get_lex_russian().as_str()
+            || original.extra != ui.get_lex_extra().as_str()
+            || original.theme != ui.get_lex_theme().as_str()
+        {
+            ui.set_status("请先保存词条修改，再调整顺序。".into());
+            return;
+        }
+        match move_weight(&folder, &original, up) {
+            Ok(Some(entry)) => {
+                set_fields(&ui, &entry);
+                state.borrow_mut().original = Some(entry);
+                ui.set_status("顺序已保存。重新输入拼音即可看到变化，无需重启。".into());
+                refresh(&ui, &folder);
+            }
+            Ok(None) => ui.set_status("已经到达这个读音的自定义词条边界。".into()),
+            Err(error) => ui.set_status(format!("无法调整顺序：{error}").into()),
+        }
+    });
+
     for bulk in [false, true] {
         let weak = ui.as_weak();
         let state = editor.clone();
@@ -324,8 +354,12 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             Ok(plan) => {
                 ui.set_lex_preview_summary(
                     format!(
-                        "将新增 {} 条、跳过 {} 条、覆盖 {} 条、合并 {} 条",
-                        plan.added, plan.skipped, plan.replaced, plan.merged
+                        "将新增 {} 条、跳过 {} 条、覆盖 {} 条、合并 {} 条。{} 行使用默认权重。",
+                        plan.added,
+                        plan.skipped,
+                        plan.replaced,
+                        plan.merged,
+                        plan.defaulted_weights
                     )
                     .into(),
                 );

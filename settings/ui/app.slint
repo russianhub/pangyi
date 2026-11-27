@@ -820,6 +820,7 @@ export component MainWindow inherits Window {
     callback lex-mark(int, bool);
     callback lex-delete-selected();
     callback lex-undo();
+    callback lex-move-weight(bool);
     callback lex-reading-changed();
     in-out property <string> lex-search;
     in-out property <int> lex-kind: 0;
@@ -1353,14 +1354,28 @@ export component MainWindow inherits Window {
                                 }
                                 HorizontalLayout {
                                     spacing: 8px;
-                                    LineEdit {
-                                    text <=> root.lex-extra;
-                                    placeholder-text: root.lex-kind == 0 ? "权重（可选，100 可排在内置精确首选前）" : "备注（可选）";
-                                    accessible-label: root.lex-kind == 0 ? "候选权重" : "备注";
+                                    if root.lex-kind == 0: LineEdit {
+                                        text <=> root.lex-extra;
+                                        input-type: decimal;
+                                        placeholder-text: "权重 −9999 至 9999，留空为 0";
+                                        accessible-label: "候选权重";
+                                    }
+                                    if root.lex-kind != 0: LineEdit {
+                                        text <=> root.lex-extra;
+                                        placeholder-text: "备注（可选）";
+                                        accessible-label: "备注";
                                     }
                                     if root.lex-kind == 0: Button {
                                         text: "最高权重";
                                         clicked => { root.lex-extra = "9999"; }
+                                    }
+                                    if root.lex-kind == 0 && root.lex-editing: Button {
+                                        text: "上移";
+                                        clicked => { root.lex-move-weight(true); }
+                                    }
+                                    if root.lex-kind == 0 && root.lex-editing: Button {
+                                        text: "下移";
+                                        clicked => { root.lex-move-weight(false); }
                                     }
                                 }
                                 HorizontalLayout {

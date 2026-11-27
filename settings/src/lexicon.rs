@@ -114,33 +114,43 @@ fn is_data(line: &str) -> bool {
 }
 
 fn parse_line(line: &str, kind: LexiconKind) -> Result<(Key, LexiconEntry), &'static str> {
-    let mut fields = line.split('\t');
+    parse_record(line, kind, false).map(|(key, entry, _)| (key, entry))
+}
+
+fn parse_record(
+    line: &str,
+    kind: LexiconKind,
+    default_weight: bool,
+) -> Result<(Key, LexiconEntry, bool), &'static str> {
+    let fields: Vec<_> = line.split('\t').collect();
+    if fields.len() < if kind == LexiconKind::Words { 2 } else { 3 } || fields.len() > 4 {
+        return Err("列数不符：自定义词需 2–4 列，释义覆盖需 3–4 列");
+    }
+    let import_weight = default_weight && kind == LexiconKind::Words;
+    let extra = fields.get(3).copied().unwrap_or_default();
+    let used_default = import_weight
+        && (extra.trim().is_empty()
+            || extra.chars().any(char::is_control)
+            || parse_weight(extra.trim()).is_err());
     if fields
-        .clone()
-        .any(|field| field.chars().any(char::is_control))
+        .iter()
+        .enumerate()
+        .any(|(index, field)| !(index == 3 && used_default) && field.chars().any(char::is_control))
     {
         return Err("包含非法控制字符");
     }
-    let columns = fields.clone().count();
-    if columns < if kind == LexiconKind::Words { 2 } else { 3 } || columns > 4 {
-        return Err("列数不符：自定义词需 2–4 列，释义覆盖需 3–4 列");
-    }
-    let mut fields = fields.by_ref().map(str::trim);
-    let head = fields.next().unwrap_or_default();
-    let reading = fields.next().ok_or("至少需要词头和拼音两列")?;
-    let russian = fields.next().unwrap_or_default();
-    let extra = fields.next().unwrap_or_default();
-    if fields.next().is_some() {
-        return Err("每行最多四列");
-    }
     let entry = LexiconEntry {
-        head: head.into(),
-        reading: reading.into(),
-        russian: russian.into(),
-        extra: extra.into(),
+        head: fields[0].trim().into(),
+        reading: fields[1].trim().into(),
+        russian: fields.get(2).copied().unwrap_or_default().trim().into(),
+        extra: if used_default {
+            String::new()
+        } else {
+            extra.trim().into()
+        },
         theme: String::new(),
     };
-    Ok((entry.key(kind)?, entry))
+    Ok((entry.key(kind)?, entry, used_default))
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -289,6 +299,59 @@ pub fn edit_lexicon(
     let output = rewrite_rows(&text, kind, &updates, append);
     check_size(&output)?;
     write_atomic(&path, &output)
+}
+
+/// Move a saved custom word within the ranked list for its normalized reading.
+pub fn move_weight(
+    dir: &Path,
+    selected: &LexiconEntry,
+    up: bool,
+) -> io::Result<Option<LexiconEntry>> {
+    let kind = LexiconKind::Words;
+    let key = selected.key(kind).map_err(invalid)?;
+    let _lock = lock(dir)?;
+    let path = dir.join(kind.filename());
+    let before = read_local(&path)?;
+    let current = rows(&before, kind);
+    if current.get(&key) != Some(selected) {
+        return Err(invalid("这条词已被修改，请重新选择后再调整"));
+    }
+
+    // The IME resolves duplicates with the final physical row and breaks ties by that row.
+    let selected_reading = key.1;
+    let mut seen = HashSet::new();
+    let mut slots: Vec<_> = strip_bom(&before)
+        .lines()
+        .rev()
+        .filter(|line| is_data(line))
+        .filter_map(|line| parse_line(line, kind).ok().map(|(key, _)| key))
+        .filter(|key| key.1 == selected_reading && seen.insert(key.clone()))
+        .collect();
+    slots.reverse();
+    let weight = |row: &LexiconEntry| parse_weight(&row.extra).ok().flatten().unwrap_or(0);
+    let mut ranked: Vec<_> = slots.iter().map(|key| &current[key]).collect();
+    ranked.sort_by_key(|row| std::cmp::Reverse(weight(row)));
+    let index = ranked.iter().position(|row| *row == selected).unwrap();
+    let neighbor = if up {
+        index.checked_sub(1)
+    } else {
+        index.checked_add(1).filter(|&i| i < ranked.len())
+    };
+    let Some(neighbor) = neighbor else {
+        return Ok(None);
+    };
+    let mut moved: Vec<_> = ranked.iter().map(|row| (*row).clone()).collect();
+    moved.swap(index, neighbor);
+    // Keep the weight of each rank position. Reorder the file slots as well so equal
+    // weights have a deterministic order and no candidate is moved into another band.
+    for (row, original) in moved.iter_mut().zip(ranked) {
+        row.extra.clone_from(&original.extra);
+    }
+    let updates = slots.into_iter().zip(moved.iter().map(Some)).collect();
+    let after = rewrite_rows(&before, kind, &updates, Vec::new());
+    check_size(&after)?;
+    write_atomic(&path, &after)?;
+    Ok(Some(moved.swap_remove(neighbor)))
 }
 
 fn rewrite_rows(
@@ -479,6 +542,7 @@ pub struct ImportPreview {
     pub replaced: usize,
     pub merged: usize,
     pub issues: Vec<String>,
+    pub defaulted_weights: usize,
     pub metadata: DictionaryMetadata,
 }
 
@@ -622,6 +686,7 @@ pub fn preview_import(
     let mut replaced = HashSet::new();
     let mut merged = HashSet::new();
     let mut omitted = 0;
+    let mut defaulted_weights = 0;
 
     for (index, raw) in bytes.split(|&byte| byte == b'\n').enumerate() {
         let result = (|| {
@@ -631,9 +696,9 @@ pub fn preview_import(
             if line.trim().is_empty() || line.trim_start().starts_with('#') {
                 return Ok(None);
             }
-            parse_line(line, kind).map(Some)
+            parse_record(line, kind, true).map(Some)
         })();
-        let (key, mut incoming) = match result {
+        let (key, mut incoming, used_default) = match result {
             Ok(Some(row)) => row,
             Ok(None) => continue,
             Err(message) => {
@@ -642,6 +707,15 @@ pub fn preview_import(
                 continue;
             }
         };
+        if used_default {
+            defaulted_weights += 1;
+            report_import_issue(
+                &mut issues,
+                &mut omitted,
+                index + 1,
+                "权重缺失或无效，使用默认权重 0",
+            );
+        }
         incoming.theme = theme.to_owned();
         let existing = current.get(&key);
         let entry = match (existing, policy) {
@@ -715,6 +789,7 @@ pub fn preview_import(
         replaced: replaced.len(),
         merged: merged.len(),
         issues,
+        defaulted_weights,
         metadata,
     })
 }
@@ -770,6 +845,54 @@ mod tests {
             extra: extra.into(),
             theme: String::new(),
         }
+    }
+
+    #[test]
+    fn numeric_weight_boundaries_and_legacy_import_defaults() {
+        let dir = test_dir("weight-range");
+        let kind = LexiconKind::Words;
+        for weight in ["-9999", "0", "1", "9999", ""] {
+            assert!(entry("甲", "jia", "", weight).key(kind).is_ok());
+        }
+        for weight in ["-10000", "10000", "2.5", "invalid"] {
+            assert!(entry("甲", "jia", "", weight).key(kind).is_err());
+        }
+        let input = "甲\tjia\r\n乙\tyi\tдва\tbad\r\n丙\tbing\tтри\t-10";
+        let plan = preview_import(&dir, kind, input.as_bytes(), DuplicatePolicy::Skip, "").unwrap();
+        assert_eq!(
+            (plan.added, plan.skipped, plan.defaulted_weights),
+            (3, 0, 2)
+        );
+        assert!(plan.issues.iter().all(|issue| issue.contains("默认权重 0")));
+        commit_import(&dir, &plan).unwrap();
+        let words = lexicon_entries(&dir, kind).unwrap();
+        assert!(words
+            .iter()
+            .any(|row| row.head == "丙" && row.extra == "-10"));
+        assert!(words.iter().filter(|row| row.extra.is_empty()).count() == 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn weight_moves_keep_rank_slots_and_stable_file_ties() {
+        let dir = test_dir("weight-move");
+        let path = dir.join(WORDS_FILE);
+        fs::write(&path, "\u{feff}# keep\r\n甲\tjia\tодин\t200\r\n旁\tpang\r\n乙\tjiā\tдва\t200\r\n丙\tjia\tтри\t100\r\n丁\tjia\r\n").unwrap();
+        let kind = LexiconKind::Words;
+        let entries = lexicon_entries(&dir, kind).unwrap();
+        let row = |head| entries.iter().find(|row| row.head == head).unwrap();
+        assert!(move_weight(&dir, row("甲"), true).unwrap().is_none());
+        let changed = move_weight(&dir, row("乙"), true).unwrap().unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(
+            "\u{feff}# keep\r\n乙\tjiā\tдва\t200\r\n旁\tpang\r\n甲\tjia\tодин\t200\r\n"
+        ));
+        let changed = move_weight(&dir, &changed, false).unwrap().unwrap();
+        let changed = move_weight(&dir, &changed, false).unwrap().unwrap();
+        assert_eq!(changed.extra, "100");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("丙\tjia\tтри\t200\r\n乙\tjiā\tдва\t100\r\n丁\tjia"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -841,7 +964,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!((plan.added, plan.skipped), (1, 1));
-        assert!(plan.issues[0].contains("第 3 行"));
+        assert!(plan.issues.iter().any(|issue| issue.contains("第 3 行")));
         assert_eq!(fs::read(&path).unwrap(), before);
         commit_import(&dir, &plan).unwrap();
         assert!(lexicon_entries(&dir, kind)
@@ -888,8 +1011,8 @@ mod tests {
             "",
         )
         .unwrap();
-        assert_eq!((plan.added, plan.skipped), (1, 4));
-        for (index, issue) in plan.issues.iter().enumerate() {
+        assert_eq!((plan.added, plan.skipped, plan.defaulted_weights), (1, 4, 1));
+        for (index, issue) in plan.issues.iter().take(4).enumerate() {
             assert!(issue.starts_with(&format!("第 {} 行", index + 1)));
         }
         fs::remove_dir_all(dir).unwrap();
