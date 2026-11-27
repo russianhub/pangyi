@@ -1,52 +1,34 @@
 # 旁译 Pangyi
 
-### 敲拼音，看俄语。把查词融入每一次输入。
+**敲中文拼音，在 Windows 输入法候选窗里看俄语释义。** 有重音的数据会显示重音。适合边聊天、写作边查词。
 
-![旁译 v4.18.0：中文输入、俄语释义、本机运行；画面为功能示意](docs/hero-v4.18.0.jpg)
+**[下载 Windows 安装包 v4.20.0](https://github.com/russianhub/pangyi/releases/download/v4.20.0/pangyi-v4.20.0.exe)** · [发布与 SHA256](https://github.com/russianhub/pangyi/releases/tag/v4.20.0) · [反馈问题](https://github.com/russianhub/pangyi/issues)
 
-**面向俄语学习者的 Windows 系统输入法。** 输入熟悉的中文拼音，在候选窗里查看对应的俄语释义；有重音的数据会显示重音。写作、聊天、记单词，都从一次输入开始。
+免费开源 · 打字和查词离线运行 · 无广告
 
-**[↓ 下载 v4.20.0 Windows 安装包](https://github.com/russianhub/pangyi/releases/download/v4.20.0/pangyi-v4.20.0.exe)** · [更新说明](docs/releases/v4.20.0.md) · [反馈问题](https://github.com/russianhub/pangyi/issues)
+## 安装并试用
 
-免费开源 · 本机运行 · 无广告 · 打字和查词不需要联网
+1. 下载并运行安装包。安装包未签名。若 Windows 显示 SmartScreen 提示，先确认下载来源和发布页提供的 SHA256。
+2. 首次安装后按提示注销并重新登录，或重启电脑。升级后保存工作，完全退出再打开使用旁译的应用。若仍加载旧版，请注销后重新登录。
+3. 按 `Win + 空格` 选择「旁译」，输入 `pengyou`，在「朋友」候选旁查看俄语释义。双击桌面或开始菜单中的「旁译」可打开设置。
 
-账号是可选功能。输入法核心离线：不登录也能打字、用本机词库和表情包，输入法 DLL 不访问网络。只有从设置打开「旁译账号」并登录时，那个窗口才会联网。
+旁译通过 Windows 文本服务框架（TSF）在记事本、Word、浏览器及其他支持系统输入法的应用中使用。
 
-输入法本体（`pangyi_ime.dll`）完全离线，不联网。检查更新由独立的 `pangyi-updater.exe` 完成：自动检查只请求版本信息（`https://eyuxq.com/latest.json`），设置里的「更新」行可以随时关闭。只有你在更新弹窗里选择下载时，这个独立程序才会去取安装包。
+![旁译输入演示，画面为功能示意](docs/hero-v4.18.0.jpg)
 
-## 先试这三个输入
-
-| 你想做什么 | 这样操作 |
+| 想做什么 | 这样操作 |
 | --- | --- |
-| 边打中文，边看俄语 | 输入 `pengyou`，在“朋友”旁查看俄语释义 |
-| 聊天时快速选表情 | 设置中开启表情模式，回到中文模式输入 `xdm`，候选中出现 🤝 |
-| 临时输入英文 | 单独轻按一下 `Shift`，看到中/英模式切换提示后继续输入 |
+| 边打中文边看俄语 | 输入 `pengyou`（朋友）或 `kaifa`（开发） |
+| 临时输入英文 | 单独轻按一次 `Shift`，看到中英切换提示后继续输入 |
+| 快速输入表情 | 在设置中开启「表情模式」，回到中文模式输入 `xdm`，选择 🤝 |
 
-旁译接入 Windows 输入法系统（TSF），安装后按 `Win + 空格` 切换使用，无需每次启动独立查词程序。可在记事本、Word、浏览器、聊天软件等支持系统输入法的应用中使用；具体兼容情况欢迎反馈。
+## v4.20.0 更新
 
-## v4.20.0：新的设置窗口
+桌面和开始菜单的「旁译」现在打开独立设置窗口 `pangyi-settings.exe`。左侧导航集中管理输入、候选界面和其他选项。切换英文模式和表情模式即时生效。
 
-- **独立的设置程序**：双击桌面或开始菜单里的「旁译」，打开的是 `pangyi-settings.exe`。左侧有导航，设置按分组卡片排列，开 / 关项用开关，多选项用分段控件，强调色跟着所选配色走。
-- **这是第一次把新设置窗口放进安装包**。v4.19.0 里还是旧的一排按钮。从旧版升级后，若仍看到旧界面，请完全退出相关应用并注销后重新登录。
-- **还没在真实 Windows 上亲手验证**：新窗口经过 Linux 下的实际运行截图，以及 Windows CI 的编译和单元测试。请不要把它当成已经在 Windows 真机上用过。
+设置窗口经过 Linux 运行检查和 Windows CI 编译与单元测试。Windows 真机体验仍待手工验证。[完整更新说明](docs/releases/v4.20.0.md)
 
-[查看完整更新、安装说明与尚未在 Windows 上手工验证的部分 →](docs/releases/v4.20.0.md)
-
-## v4.18.0：可以加自己的词，也可以打出表情和符号
-
-- **用户词库**：在 `%LOCALAPPDATA%\Pangyi\user-dict.tsv` 里加词，在 `user-gloss.tsv` 里改已有词的俄语。不用联网，也不用账号。第一次切到旁译时，如果文件还不存在，会生成带说明的模板。
-- **表情包和符号包**：把 `*.tsv` 放进 `%LOCALAPPDATA%\Pangyi\packs\`，下一次打这个拼音就生效，删掉文件就关闭。官方包用仓库里的 `scripts/pangyi-packs.ps1` 下载，并核对 SHA256。输入法本身不访问网络。
-- **还没在真实 Windows 上亲手验证**：这两项目前只经过单元测试和持续集成。请不要把它们当成已经稳定的功能。
-
-[查看完整更新、重启说明与尚未在 Windows 上手工验证的部分 →](docs/releases/v4.18.0.md)
-
-## 三步开始
-
-1. 下载并运行上方 `pangyi-v4.20.0.exe` 安装包。该版本未签名；若出现 SmartScreen 提示，先确认下载来源与 [Release 中的 SHA256](https://github.com/russianhub/pangyi/releases/tag/v4.20.0)，再决定是否继续运行。
-2. 首次安装后，按安装提示注销并重新登录（也可重启电脑）；升级后，保存工作并完全退出、重新打开使用旁译的应用，让它加载新版输入法。
-3. 按 `Win + 空格` 选择「旁译」，输入 `pengyou` 或 `kaifa` 开始使用。双击桌面「旁译」打开设置。
-
-> **什么时候需要重启？** 安装或升级涉及输入法组件加载；日常切换英文模式、表情模式无需重启应用或电脑。热重载仅覆盖这两个开关。如果升级后仍像旧版，先完全退出应用（含后台进程）再打开；仍无效时注销后重新登录。
+v4.18.0 加入了[用户词库](docs/user-dictionary.md)和[表情包与符号包](docs/emoji-packs.md)。[v4.18.0 更新说明与验证范围](docs/releases/v4.18.0.md)
 
 ## 常用操作
 
@@ -93,8 +75,6 @@
 
 放进这个文件夹的 `*.tsv` 会在下一次打拼音时生效，删掉文件就关闭。官方包用仓库里的 `scripts/pangyi-packs.ps1` 下载，并核对 SHA256。
 
-输入法只读已经在本机的文件。查词和打字都在你的电脑上完成。下载是另一个脚本做的事；不运行这个脚本，输入法就不会去访问网络。输入法 DLL 里没有下载代码，也不会在你打字时自己去取表情包。账号登录同样不在 DLL 里：只有你从设置打开账号窗口并登录时，那个窗口才联网，而且不上传词库或按键。
-
 怎么下载、怎么写一个包给别人，见 [表情包](docs/emoji-packs.md)。
 
 ## 反馈与卸载
@@ -103,7 +83,9 @@
 
 卸载可运行 `"C:\Program Files\Pangyi\pangyi.exe" --uninstall`，完成后按提示注销或重启。
 
-## 可选账号
+## 离线使用与可选账号
+
+输入法 DLL 在本机处理打字、查词和表情。独立更新程序自动请求版本信息，可在设置中关闭自动检查。只有你在更新弹窗选择下载时，更新程序才会获取安装包。
 
 设置中的「旁译账号」打开单独的账号窗口，用邮箱验证码登录，不设置密码。没有配置身份服务时，窗口会写明登录不可用，不会显示登录成功。
 
@@ -114,14 +96,14 @@
 Windows + Rust（[rustup](https://rustup.rs)）：
 
 ```powershell
-cd ime
-cargo build --release                    # 64 位 pangyi_ime.dll（cdylib）
+# 从仓库根目录运行
+cargo build --release --lib --manifest-path ime/Cargo.toml  # 64 位 pangyi_ime.dll
 # 32 位 DLL：需要 tools/llvm-mingw，并把 build/x86-stub.c 编成 build/x86-stub.o
 # 再链进 i686-pc-windows-gnu（做法与 CI 相同，见下一节）
 # 安装包 exe：先编更新程序和设置程序，连同两个 DLL、pangyi.ico 放进 ime/payload/，再编 setup
 cargo build --release --manifest-path updater/Cargo.toml    # updater/target/release/pangyi-updater.exe
 cargo build --release --manifest-path settings/Cargo.toml   # settings/target/release/pangyi-settings.exe
-cargo build --release --bin setup                          # ime/target/release/setup.exe
+cargo build --release --features account --bin setup --manifest-path ime/Cargo.toml
 ```
 
 `setup.exe` 用 `include_bytes!` 把 `ime/payload/pangyi-settings.exe` 嵌进去，安装时写到 `C:\Program Files\Pangyi\pangyi-settings.exe`。所以要先编出设置程序，再编安装包。
@@ -132,7 +114,7 @@ cargo build --release --bin setup                          # ime/target/release/
 
 [![持续集成](https://github.com/russianhub/pangyi/actions/workflows/ci.yml/badge.svg)](https://github.com/russianhub/pangyi/actions/workflows/ci.yml)
 
-`.github/workflows/ci.yml` 在推送到 `main`，以及指向 `main` 的拉取请求上运行，使用 `windows-latest`。设置程序入口这一支在合入 main 之前，push 到 `cursor/settings-entry-switch-fc06` 也会跑同一套构建。
+`.github/workflows/ci.yml` 在推送到 `main`，以及指向 `main` 的拉取请求上运行，使用 `windows-latest`。
 
 - 64 位：`cargo build --release --lib`。运行器默认是 MSVC 工具链，和本机 rustup 默认宿主上的 `cargo build --release` 一致，产物是 `pangyi_ime.dll`。
 - 32 位：下载 [llvm-mingw 20261020](https://github.com/mstorsjo/llvm-mingw/releases/tag/20261020) 的 msvcrt、x86_64 压缩包，核对 SHA256 后解到 `tools/llvm-mingw`（该目录已 gitignore）。用其中的 `i686-w64-mingw32-gcc` 把 `ime/build/x86-stub.c` 编成 `x86-stub.o`，再以 `i686-pc-windows-gnu`、`-C link-self-contained=no`、`+crt-static` 链出 32 位 DLL。
