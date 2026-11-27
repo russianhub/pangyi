@@ -97,10 +97,18 @@ fn is_data(line: &str) -> bool {
 }
 
 fn parse_line(line: &str, kind: LexiconKind) -> Result<(Key, LexiconEntry), &'static str> {
-    let mut fields = line
-        .trim_end_matches(['\r', '\n'])
-        .split('\t')
-        .map(str::trim);
+    let mut fields = line.trim_end_matches(['\r', '\n']).split('\t');
+    if fields
+        .clone()
+        .any(|field| field.chars().any(char::is_control))
+    {
+        return Err("包含非法控制字符");
+    }
+    let columns = fields.clone().count();
+    if columns < if kind == LexiconKind::Words { 2 } else { 3 } || columns > 4 {
+        return Err("列数不符：自定义词需 2–4 列，释义覆盖需 3–4 列");
+    }
+    let mut fields = fields.by_ref().map(str::trim);
     let head = fields.next().unwrap_or_default();
     let reading = fields.next().ok_or("至少需要词头和拼音两列")?;
     let russian = fields.next().unwrap_or_default();
@@ -130,21 +138,31 @@ fn check_size(text: &str) -> io::Result<()> {
     Ok(())
 }
 
-pub fn read_import(path: &Path) -> io::Result<String> {
+const MAX_IMPORT_BYTES: usize = 4 * 1024 * 1024;
+
+fn read_capped(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)?
-        .take((MAX_BYTES + 1) as u64)
+        .take((limit + 1) as u64)
         .read_to_end(&mut bytes)?;
-    let text = String::from_utf8(bytes).map_err(|_| invalid("请选择 UTF-8 编码的 TSV 文件"))?;
-    check_size(&text)?;
-    Ok(text)
+    if bytes.len() > limit {
+        return Err(invalid(format!("文件超过 {} KiB", limit / 1024)));
+    }
+    Ok(bytes)
+}
+
+pub fn read_import(path: &Path) -> io::Result<Vec<u8>> {
+    read_capped(path, MAX_IMPORT_BYTES)
 }
 
 fn read_local(path: &Path) -> io::Result<String> {
-    match read_import(path) {
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(String::new()),
-        result => result,
-    }
+    let bytes = match read_capped(path, MAX_BYTES) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(String::new()),
+        result => result?,
+    };
+    let text = String::from_utf8(bytes).map_err(|_| invalid("本机词库不是 UTF-8"))?;
+    check_size(&text)?;
+    Ok(text)
 }
 
 fn rows(text: &str, kind: LexiconKind) -> HashMap<Key, LexiconEntry> {
@@ -268,52 +286,207 @@ fn append_entry(text: &mut String, entry: &LexiconEntry, newline: &str) {
     text.push_str(newline);
 }
 
-pub fn import_lexicon(dir: &Path, kind: LexiconKind, text: &str) -> io::Result<(usize, usize)> {
-    check_size(text)?;
-    let mut incoming = Vec::new();
-    let mut seen = HashSet::new();
-    for (index, line) in strip_bom(text)
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| is_data(line))
-    {
-        let row = parse_line(line, kind)
-            .map_err(|message| invalid(format!("导入文件第 {} 行：{message}", index + 1)))?;
-        if !seen.insert(row.0.clone()) {
-            return Err(invalid(format!("导入文件第 {} 行有重复词条", index + 1)));
-        }
-        incoming.push(row);
-    }
-    if incoming.is_empty() {
-        return Err(invalid("文件没有可导入的词条"));
-    }
+#[derive(Clone, Copy)]
+pub enum DuplicatePolicy {
+    Skip,
+    Replace,
+    Merge,
+}
 
-    let _lock = lock(dir)?;
-    let path = dir.join(kind.filename());
-    let mut output = read_local(&path)?;
-    let current = rows(&output, kind);
-    let newline = newline_style(&output);
+pub struct ImportPreview {
+    kind: LexiconKind,
+    before: String,
+    after: String,
+    pub added: usize,
+    pub skipped: usize,
+    pub replaced: usize,
+    pub merged: usize,
+    pub issues: Vec<String>,
+}
+
+impl ImportPreview {
+    pub fn has_changes(&self) -> bool {
+        self.before != self.after
+    }
+}
+
+fn merge_entry(existing: &LexiconEntry, incoming: &LexiconEntry) -> LexiconEntry {
+    let mut merged = existing.clone();
+    let mut seen = HashSet::new();
+    merged.russian = [&existing.russian, &incoming.russian]
+        .into_iter()
+        .flat_map(|text| text.split('|').map(str::trim))
+        .filter(|part| !part.is_empty() && seen.insert(*part))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if merged.extra.is_empty() {
+        merged.extra.clone_from(&incoming.extra);
+    }
+    merged
+}
+
+pub fn preview_import(
+    dir: &Path,
+    kind: LexiconKind,
+    bytes: &[u8],
+    policy: DuplicatePolicy,
+) -> io::Result<ImportPreview> {
+    if bytes.len() > MAX_IMPORT_BYTES {
+        return Err(invalid("导入文件超过 4 MiB"));
+    }
+    let before = read_local(&dir.join(kind.filename()))?;
+    let baseline = rows(&before, kind);
+    let mut current = baseline.clone();
+    let mut updates = HashMap::new();
+    let mut new_order = Vec::new();
     let mut added = 0;
     let mut skipped = 0;
-    for (key, entry) in incoming {
-        if current.contains_key(&key) {
-            skipped += 1;
+    let mut replaced = HashSet::new();
+    let mut merged = HashSet::new();
+    let mut issues = Vec::new();
+    let mut omitted = 0;
+
+    for (index, raw) in bytes.split(|&byte| byte == b'\n').enumerate() {
+        let result = (|| {
+            let line = std::str::from_utf8(raw).map_err(|_| "不是有效的 UTF-8")?;
+            let line = if index == 0 { strip_bom(line) } else { line };
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                return Ok(None);
+            }
+            parse_line(line, kind).map(Some)
+        })();
+        let (key, incoming) = match result {
+            Ok(Some(row)) => row,
+            Ok(None) => continue,
+            Err(message) => {
+                skipped += 1;
+                if issues.len() < 100 {
+                    issues.push(format!("第 {} 行：{message}", index + 1));
+                } else {
+                    omitted += 1;
+                }
+                continue;
+            }
+        };
+        let entry = match current.get(&key) {
+            None => {
+                added += 1;
+                new_order.push(key.clone());
+                incoming
+            }
+            Some(existing) => {
+                let next = match policy {
+                    DuplicatePolicy::Skip => existing.clone(),
+                    DuplicatePolicy::Replace => incoming,
+                    DuplicatePolicy::Merge => merge_entry(existing, &incoming),
+                };
+                if let Err(message) = next.key(kind) {
+                    skipped += 1;
+                    if issues.len() < 100 {
+                        issues.push(format!("第 {} 行：合并后{message}", index + 1));
+                    } else {
+                        omitted += 1;
+                    }
+                    continue;
+                }
+                if &next == existing {
+                    skipped += 1;
+                    continue;
+                }
+                match policy {
+                    DuplicatePolicy::Replace => {
+                        replaced.insert(key.clone());
+                    }
+                    DuplicatePolicy::Merge => {
+                        merged.insert(key.clone());
+                    }
+                    DuplicatePolicy::Skip => {}
+                }
+                next
+            }
+        };
+        current.insert(key.clone(), entry.clone());
+        updates.insert(key, entry);
+    }
+    if omitted > 0 {
+        issues.push(format!("另有 {omitted} 条问题"));
+    }
+
+    updates.retain(|key, row| baseline.get(key) != Some(row));
+    replaced.retain(|key| baseline.contains_key(key) && updates.contains_key(key));
+    merged.retain(|key| baseline.contains_key(key) && updates.contains_key(key));
+    let mut after = String::new();
+    let body = strip_bom(&before);
+    if body.len() != before.len() {
+        after.push('\u{feff}');
+    }
+    let mut seen = HashSet::new();
+    // 倒序识别最后一条生效记录，输出保持原文件顺序。
+    let mut output = Vec::new();
+    for line in body.split_inclusive('\n').rev() {
+        if let Some((key, row)) = is_data(line)
+            .then(|| parse_line(line, kind).ok())
+            .flatten()
+            .and_then(|(key, _)| updates.get(&key).map(|row| (key, row)))
+        {
+            if seen.insert(key) {
+                output.push(format!("{}{}", row.line(), line_ending(line)));
+            }
         } else {
-            append_entry(&mut output, &entry, newline);
-            added += 1;
+            output.push(line.to_owned());
         }
     }
-    check_size(&output)?;
-    if added > 0 {
-        write_atomic(&path, &output)?;
+    after.extend(output.into_iter().rev());
+    let newline = newline_style(&before);
+    for key in new_order {
+        append_entry(&mut after, &updates[&key], newline);
     }
-    Ok((added, skipped))
+    check_size(&after)?;
+    Ok(ImportPreview {
+        kind,
+        before,
+        after,
+        added,
+        skipped,
+        replaced: replaced.len(),
+        merged: merged.len(),
+        issues,
+    })
+}
+
+fn line_ending(line: &str) -> &'static str {
+    if line.ends_with("\r\n") {
+        "\r\n"
+    } else if line.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    }
+}
+
+pub fn commit_import(dir: &Path, preview: &ImportPreview) -> io::Result<()> {
+    let _lock = lock(dir)?;
+    let path = dir.join(preview.kind.filename());
+    if read_local(&path)? != preview.before {
+        return Err(invalid("预览后词库已修改，请重新生成预览"));
+    }
+    if preview.has_changes() {
+        write_atomic(&path, &preview.after)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::settings_file::test_dir;
+
+    fn import_lexicon(dir: &Path, kind: LexiconKind, text: &str) -> io::Result<(usize, usize)> {
+        let plan = preview_import(dir, kind, text.as_bytes(), DuplicatePolicy::Skip)?;
+        commit_import(dir, &plan)?;
+        Ok((plan.added, plan.skipped))
+    }
 
     fn entry(head: &str, reading: &str, russian: &str, extra: &str) -> LexiconEntry {
         LexiconEntry {
@@ -384,9 +557,63 @@ mod tests {
             .iter()
             .any(|row| row.head == "登机口" && row.russian == "мой перевод"));
         let before = fs::read(&path).unwrap();
-        let error = import_lexicon(&dir, kind, "甲\tjia\tтест\n乙\twrong key\tтест\n").unwrap_err();
-        assert!(error.to_string().contains("第 2 行"));
-        assert_eq!(fs::read(path).unwrap(), before);
+        let plan = preview_import(
+            &dir,
+            kind,
+            b"\xef\xbb\xbf\xe7\x94\xb2\tjia\r\n\r\n\xff\n",
+            DuplicatePolicy::Skip,
+        )
+        .unwrap();
+        assert_eq!((plan.added, plan.skipped), (1, 1));
+        assert!(plan.issues[0].contains("第 3 行"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        commit_import(&dir, &plan).unwrap();
+        assert!(lexicon_entries(&dir, kind)
+            .unwrap()
+            .iter()
+            .any(|row| row.head == "甲"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn duplicate_policies_and_stale_preview() {
+        let dir = test_dir("lex-policies");
+        let kind = LexiconKind::Words;
+        import_lexicon(&dir, kind, "女\tnv\tженщина\t100\n").unwrap();
+        let input = "女\tnǚ\tдевушка | женщина\t50\n甲\tjia\tпервый\n甲\tjia\tновый";
+        let skip = preview_import(&dir, kind, input.as_bytes(), DuplicatePolicy::Skip).unwrap();
+        assert_eq!((skip.added, skip.skipped, skip.replaced), (1, 2, 0));
+        let replace =
+            preview_import(&dir, kind, input.as_bytes(), DuplicatePolicy::Replace).unwrap();
+        assert_eq!((replace.added, replace.replaced), (1, 1));
+        assert!(replace.after.contains("女\tnǚ\tдевушка | женщина\t50"));
+        let merge = preview_import(&dir, kind, input.as_bytes(), DuplicatePolicy::Merge).unwrap();
+        assert_eq!((merge.added, merge.merged), (1, 1));
+        commit_import(&dir, &merge).unwrap();
+        assert!(merge.after.contains("女\tnv\tженщина | девушка\t100"));
+        assert!(merge.after.contains("甲\tjia\tпервый | новый"));
+        assert!(commit_import(&dir, &replace).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reports_column_size_and_invalid_character_per_line() {
+        let dir = test_dir("lex-alformed");
+        let bytes = format!(
+            "甲\n乙\tyi\t{}\n丙\tbi ng\n丁\tding\tx\u{0}\n\n戊\twu",
+            "я".repeat(401)
+        );
+        let plan = preview_import(
+            &dir,
+            LexiconKind::Words,
+            bytes.as_bytes(),
+            DuplicatePolicy::Skip,
+        )
+        .unwrap();
+        assert_eq!((plan.added, plan.skipped), (1, 4));
+        for (index, issue) in plan.issues.iter().enumerate() {
+            assert!(issue.starts_with(&format!("第 {} 行", index + 1)));
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 

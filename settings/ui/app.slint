@@ -1,6 +1,6 @@
 // 旁译设置窗口。控件用 Fluent；候选预览用旁译自己的色，不把整窗染成强调色。
 // 默认字体用微软雅黑 UI，版本号用 Segoe UI Variable。中文不依赖软件渲染器的西文回落。
-import { AboutSlint, Button, ComboBox, LineEdit, Palette } from "std-widgets.slint";
+import { AboutSlint, Button, ComboBox, LineEdit, Palette, TextEdit } from "std-widgets.slint";
 
 export { Palette }
 
@@ -820,6 +820,14 @@ export component MainWindow inherits Window {
     callback lex-import();
     callback lex-add-pack(int);
     callback lex-catalog();
+    callback lex-preview();
+    callback lex-confirm-import();
+    callback lex-cancel-import();
+    in-out property <int> lex-duplicate-policy: 0;
+    in property <bool> lex-preview-open;
+    in property <bool> lex-can-import;
+    in property <string> lex-preview-summary;
+    in property <string> lex-issues;
 
     callback max-selected(int);
     callback scale-selected(int);
@@ -1353,7 +1361,37 @@ export component MainWindow inherits Window {
                                     }
                                 }
                                 Hint {
-                                    text: "主题词典加入自定义词条。文件导入使用上方的编辑类型，同词同音的已有条目会保留。";
+                                    text: "主题词典加入自定义词条。本地 TSV 使用打开文件时选中的词库类型。";
+                                }
+                                if root.lex-preview-open: VerticalLayout {
+                                    spacing: 8px;
+                                    ComboBox {
+                                        accessible-label: "重复词条处理方式";
+                                        model: ["跳过重复", "覆盖重复", "合并俄语释义"];
+                                        current-index <=> root.lex-duplicate-policy;
+                                        selected => { root.lex-preview(); }
+                                    }
+                                    Hint { text: root.lex-preview-summary; }
+                                    if root.lex-issues != "": TextEdit {
+                                        text: root.lex-issues;
+                                        read-only: true;
+                                        height: 116px;
+                                        accessible-label: "跳过的行和原因";
+                                    }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 8px;
+                                        Button {
+                                            text: "确认导入";
+                                            primary: true;
+                                            enabled: root.lex-can-import;
+                                            clicked => { root.lex-confirm-import(); }
+                                        }
+                                        Button {
+                                            text: "取消";
+                                            clicked => { root.lex-cancel-import(); }
+                                        }
+                                    }
                                 }
                             }
                         }

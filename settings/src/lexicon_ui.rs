@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use pangyi_settings::{
-    edit_lexicon, import_lexicon, lexicon_entries, load_counts, read_import, LexiconEntry,
-    LexiconKind,
+    commit_import, edit_lexicon, lexicon_entries, load_counts, preview_import, read_import,
+    DuplicatePolicy, ImportPreview, LexiconEntry, LexiconKind,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -20,6 +20,8 @@ const THEMES: [&str; 3] = [
 struct Editor {
     visible: Vec<LexiconEntry>,
     original: Option<LexiconEntry>,
+    import: Option<(LexiconKind, Vec<u8>)>,
+    preview: Option<ImportPreview>,
 }
 
 pub(super) fn wire(ui: &MainWindow, dir: &Path) {
@@ -121,10 +123,11 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
     });
 
     let weak = ui.as_weak();
+    let state = editor.clone();
     let folder = dir.to_path_buf();
     ui.on_lex_delete(move || {
         let Some(ui) = weak.upgrade() else { return };
-        let Some(original) = editor.borrow().original.clone() else {
+        let Some(original) = state.borrow().original.clone() else {
             return;
         };
         match edit_lexicon(&folder, kind(&ui), Some(&original), None) {
@@ -138,32 +141,98 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
     });
 
     let weak = ui.as_weak();
-    let folder = dir.to_path_buf();
+    let state = editor.clone();
     ui.on_lex_import(move || {
         let Some(ui) = weak.upgrade() else { return };
-        let result = (|| {
-            let Some(path) = choose_tsv()? else {
-                return Ok(None);
-            };
-            let text = read_import(&path).map_err(|error| error.to_string())?;
-            import_lexicon(&folder, kind(&ui), &text)
-                .map(Some)
-                .map_err(|error| error.to_string())
-        })();
-        finish_import(&ui, &folder, result);
+        match choose_tsv().and_then(|path| {
+            path.map(|path| read_import(&path))
+                .transpose()
+                .map_err(|err| err.to_string())
+        }) {
+            Ok(Some(bytes)) => start_import(&ui, &state, kind(&ui), bytes),
+            Ok(None) => {}
+            Err(error) => ui.set_status(format!("无法读取导入文件：{error}").into()),
+        }
     });
 
     let weak = ui.as_weak();
-    let folder = dir.to_path_buf();
+    let state = editor.clone();
     ui.on_lex_add_pack(move |index| {
         let Some(ui) = weak.upgrade() else { return };
-        let Some(text) = THEMES.get(index as usize) else {
+        if let Some(text) = THEMES.get(index as usize) {
+            start_import(&ui, &state, LexiconKind::Words, text.as_bytes().to_vec());
+        }
+    });
+
+    let weak = ui.as_weak();
+    let state = editor.clone();
+    let folder = dir.to_path_buf();
+    ui.on_lex_preview(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut state = state.borrow_mut();
+        let Some((kind, bytes)) = state.import.as_ref() else {
             return;
         };
-        let result = import_lexicon(&folder, LexiconKind::Words, text)
-            .map(Some)
-            .map_err(|error| error.to_string());
-        finish_import(&ui, &folder, result);
+        let policy = match ui.get_lex_duplicate_policy() {
+            1 => DuplicatePolicy::Replace,
+            2 => DuplicatePolicy::Merge,
+            _ => DuplicatePolicy::Skip,
+        };
+        state.preview = match preview_import(&folder, *kind, bytes, policy) {
+            Ok(plan) => {
+                ui.set_lex_preview_summary(
+                    format!(
+                        "将新增 {} 条、跳过 {} 条、覆盖 {} 条、合并 {} 条",
+                        plan.added, plan.skipped, plan.replaced, plan.merged
+                    )
+                    .into(),
+                );
+                ui.set_lex_issues(plan.issues.join("\n").into());
+                ui.set_lex_can_import(plan.has_changes());
+                Some(plan)
+            }
+            Err(error) => {
+                ui.set_lex_preview_summary(format!("无法预览：{error}").into());
+                ui.set_lex_issues("".into());
+                ui.set_lex_can_import(false);
+                None
+            }
+        };
+    });
+
+    let weak = ui.as_weak();
+    let state = editor.clone();
+    ui.on_lex_cancel_import(move || {
+        if let Some(ui) = weak.upgrade() {
+            state.borrow_mut().import = None;
+            state.borrow_mut().preview = None;
+            ui.set_lex_preview_open(false);
+        }
+    });
+
+    let weak = ui.as_weak();
+    let state = editor.clone();
+    let folder = dir.to_path_buf();
+    ui.on_lex_confirm_import(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let result = {
+            let state = state.borrow();
+            let Some(plan) = state.preview.as_ref() else {
+                return;
+            };
+            commit_import(&folder, plan)
+        };
+        match result {
+            Ok(()) => {
+                ui.invoke_lex_cancel_import();
+                ui.set_status("词典已导入。重新输入拼音查看候选。".into());
+                refresh(&ui, &folder);
+            }
+            Err(error) => {
+                ui.set_status(format!("导入失败：{error}").into());
+                ui.invoke_lex_preview();
+            }
+        }
     });
 
     let weak = ui.as_weak();
@@ -195,15 +264,11 @@ fn refresh(ui: &MainWindow, folder: &Path) {
     crate::push_stats(ui, &load_counts(folder));
 }
 
-fn finish_import(ui: &MainWindow, folder: &Path, result: Result<Option<(usize, usize)>, String>) {
-    match result {
-        Ok(Some((added, skipped))) => {
-            ui.set_status(format!("已导入 {added} 条，保留 {skipped} 条已有词条。").into());
-            refresh(ui, folder);
-        }
-        Ok(None) => {}
-        Err(error) => ui.set_status(format!("导入失败：{error}").into()),
-    }
+fn start_import(ui: &MainWindow, state: &RefCell<Editor>, kind: LexiconKind, bytes: Vec<u8>) {
+    state.borrow_mut().import = Some((kind, bytes));
+    ui.set_lex_duplicate_policy(0);
+    ui.set_lex_preview_open(true);
+    ui.invoke_lex_preview();
 }
 
 #[cfg(windows)]
