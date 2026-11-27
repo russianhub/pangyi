@@ -847,6 +847,7 @@ export component MainWindow inherits Window {
     in property <bool> lex-can-import;
     in property <string> lex-preview-summary;
     in property <string> lex-issues;
+    in property <string> lex-metadata;
 
     callback max-selected(int);
     callback scale-selected(int);
@@ -1453,6 +1454,7 @@ export component MainWindow inherits Window {
                                         current-index <=> root.lex-duplicate-policy;
                                         selected => { root.lex-preview(); }
                                     }
+                                    if root.lex-metadata != "": Hint { text: root.lex-metadata; }
                                     Hint { text: root.lex-preview-summary; }
                                     if root.lex-issues != "": TextEdit {
                                         text: root.lex-issues;

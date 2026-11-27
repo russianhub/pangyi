@@ -1,4 +1,9 @@
-# 点餐俄语 · 词头 TAB 拼音 TAB 俄语
+# name: 点餐俄语
+# author: 旁译项目
+# version: 1.0.0
+# language: zh-CN -> ru
+# description: 餐厅点单、饮食偏好和结账
+
 请给我菜单	qinggeiwocaidan	пожалуйста принесите меню
 无糖饮料	wutangyinliao	напиток без сахара
 不加冰	bujiabing	без льда

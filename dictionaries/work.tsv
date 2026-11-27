@@ -1,4 +1,9 @@
-# 办公俄语 · 词头 TAB 拼音 TAB 俄语
+# name: 办公俄语
+# author: 旁译项目
+# version: 1.0.0
+# language: zh-CN -> ru
+# description: 会议、邮件和工作交接
+
 会议纪要	huiyijiyao	протокол совещания
 视频会议	shipinhuiyi	видеоконференция
 共享屏幕	gongxiangpingmu	показать экран

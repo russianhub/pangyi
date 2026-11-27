@@ -408,6 +408,57 @@ pub enum DuplicatePolicy {
     Merge,
 }
 
+#[derive(Default)]
+pub struct DictionaryMetadata {
+    pub name: String,
+    pub author: String,
+    pub version: String,
+    pub language: String,
+    pub description: String,
+}
+
+fn dictionary_header(bytes: &[u8]) -> (DictionaryMetadata, Vec<String>) {
+    let mut header = DictionaryMetadata::default();
+    let mut issues = Vec::new();
+    for (index, raw) in bytes.split(|&byte| byte == b'\n').enumerate() {
+        let Ok(line) = std::str::from_utf8(raw) else {
+            break;
+        };
+        let line = if index == 0 { strip_bom(line) } else { line }.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some(comment) = line.strip_prefix('#') else {
+            break;
+        };
+        let Some((key, value)) = comment.trim_start().split_once(':') else {
+            continue;
+        };
+        let (slot, max) = match key.trim() {
+            "name" => (&mut header.name, 80),
+            "author" => (&mut header.author, 100),
+            "version" => (&mut header.version, 40),
+            "language" => (&mut header.language, 40),
+            "description" => (&mut header.description, 400),
+            _ => continue,
+        };
+        let value = value.trim();
+        if value.is_empty() || value.chars().count() > max || value.chars().any(char::is_control) {
+            if issues.len() < 100 {
+                issues.push(format!(
+                    "第 {} 行：{key} 元信息为空、超过 {max} 字符或包含控制字符",
+                    index + 1
+                ));
+            }
+        } else if slot.is_empty() {
+            slot.push_str(value);
+        } else if issues.len() < 100 {
+            issues.push(format!("第 {} 行：{key} 元信息重复，保留第一项", index + 1));
+        }
+    }
+    (header, issues)
+}
+
 pub struct ImportPreview {
     kind: LexiconKind,
     before: String,
@@ -417,6 +468,7 @@ pub struct ImportPreview {
     pub replaced: usize,
     pub merged: usize,
     pub issues: Vec<String>,
+    pub metadata: DictionaryMetadata,
 }
 
 impl ImportPreview {
@@ -456,6 +508,12 @@ pub fn preview_import(
     if bytes.len() > MAX_IMPORT_BYTES {
         return Err(invalid("导入文件超过 4 MiB"));
     }
+    let (metadata, mut issues) = dictionary_header(bytes);
+    let theme = if metadata.name.is_empty() {
+        theme
+    } else {
+        metadata.name.as_str()
+    };
     let before = read_local(&dir.join(kind.filename()))?;
     let baseline = rows(&before, kind);
     let mut current = baseline.clone();
@@ -465,7 +523,6 @@ pub fn preview_import(
     let mut skipped = 0;
     let mut replaced = HashSet::new();
     let mut merged = HashSet::new();
-    let mut issues = Vec::new();
     let mut omitted = 0;
 
     for (index, raw) in bytes.split(|&byte| byte == b'\n').enumerate() {
@@ -561,6 +618,7 @@ pub fn preview_import(
         replaced: replaced.len(),
         merged: merged.len(),
         issues,
+        metadata,
     })
 }
 
@@ -867,6 +925,47 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(crowded_reading("mygate", &rows));
         assert!(!crowded_reading("mygate", &rows[..7]));
+    }
+
+    #[test]
+    fn optional_header_previews_metadata_and_assigns_theme() {
+        let dir = test_dir("lex-header");
+        let kind = LexiconKind::Words;
+        let source = "\u{feff}# name: 俄语练习\r\n# author: Автор\r\n# version: 1.2\r\n# language: zh-CN -> ru\r\n# description: 练习词\r\n# name: duplicate\r\n\r\n甲\tjia\r\n";
+        let plan = preview_import(
+            &dir,
+            kind,
+            source.as_bytes(),
+            DuplicatePolicy::Skip,
+            "旧文件名",
+        )
+        .unwrap();
+        assert_eq!(plan.metadata.name, "俄语练习");
+        assert_eq!(plan.metadata.author, "Автор");
+        assert_eq!(plan.metadata.version, "1.2");
+        assert_eq!(plan.metadata.language, "zh-CN -> ru");
+        assert_eq!(plan.metadata.description, "练习词");
+        assert!(plan.issues[0].contains("第 6 行"));
+        assert_eq!(plan.added, 1);
+        commit_import(&dir, &plan).unwrap();
+        let legacy = preview_import(
+            &dir,
+            kind,
+            "乙\tyi\n# name: ordinary comment".as_bytes(),
+            DuplicatePolicy::Skip,
+            "文件名",
+        )
+        .unwrap();
+        assert!(legacy.metadata.name.is_empty());
+        commit_import(&dir, &legacy).unwrap();
+        let entries = lexicon_entries(&dir, kind).unwrap();
+        assert!(entries
+            .iter()
+            .any(|row| row.head == "甲" && row.theme == "俄语练习"));
+        assert!(entries
+            .iter()
+            .any(|row| row.head == "乙" && row.theme == "文件名"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

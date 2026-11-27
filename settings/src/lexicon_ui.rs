@@ -270,14 +270,24 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
     let state = editor.clone();
     ui.on_lex_import(move || {
         let Some(ui) = weak.upgrade() else { return };
-        match choose_tsv().and_then(|path| {
-            path.map(|path| read_import(&path))
-                .transpose()
-                .map_err(|err| err.to_string())
-        }) {
-            Ok(Some(bytes)) => start_import(&ui, &state, kind(&ui), bytes, "文件导入"),
+        match choose_tsv() {
+            Ok(Some(path)) => match read_import(&path) {
+                Ok(bytes) => {
+                    let theme = path
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .filter(|name| {
+                            !name.is_empty()
+                                && name.chars().count() <= 80
+                                && !name.chars().any(char::is_control)
+                        })
+                        .unwrap_or("文件导入");
+                    start_import(&ui, &state, kind(&ui), bytes, theme);
+                }
+                Err(error) => ui.set_status(format!("无法读取导入文件：{error}").into()),
+            },
             Ok(None) => {}
-            Err(error) => ui.set_status(format!("无法读取导入文件：{error}").into()),
+            Err(error) => ui.set_status(format!("无法打开导入文件：{error}").into()),
         }
     });
 
@@ -319,12 +329,26 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
                     )
                     .into(),
                 );
+                let metadata = &plan.metadata;
+                let details = [
+                    ("名称", &metadata.name),
+                    ("作者", &metadata.author),
+                    ("版本", &metadata.version),
+                    ("语言", &metadata.language),
+                    ("说明", &metadata.description),
+                ]
+                .into_iter()
+                .filter(|(_, value)| !value.is_empty())
+                .map(|(label, value)| format!("{label}  {value}"))
+                .collect::<Vec<_>>();
+                ui.set_lex_metadata(details.join("\n").into());
                 ui.set_lex_issues(plan.issues.join("\n").into());
                 ui.set_lex_can_import(plan.has_changes());
                 Some(plan)
             }
             Err(error) => {
                 ui.set_lex_preview_summary(format!("无法预览：{error}").into());
+                ui.set_lex_metadata("".into());
                 ui.set_lex_issues("".into());
                 ui.set_lex_can_import(false);
                 None

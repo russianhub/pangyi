@@ -1,4 +1,9 @@
-# 出行俄语 · 词头 TAB 拼音 TAB 俄语
+# name: 出行俄语
+# author: 旁译项目
+# version: 1.0.0
+# language: zh-CN -> ru
+# description: 机场、车站和交通常用词
+
 登机口	dengjikou	выход на посадку
 登机牌	dengjipai	посадочный талон
 行李提取处	xinglitiquchu	зона выдачи багажа
