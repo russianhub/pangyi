@@ -820,6 +820,7 @@ export component MainWindow inherits Window {
     callback lex-import();
     callback lex-add-pack(int);
     callback lex-catalog();
+    callback lex-export();
     callback lex-preview();
     callback lex-confirm-import();
     callback lex-cancel-import();
@@ -1392,6 +1393,19 @@ export component MainWindow inherits Window {
                                             clicked => { root.lex-cancel-import(); }
                                         }
                                     }
+                                }
+                            }
+                        }
+
+                        Card {
+                            title: "词库备份";
+                            Row {
+                                label: "导出个人词库";
+                                desc: "保存自定义词条和俄语释义覆盖";
+                                divider: false;
+                                Button {
+                                    text: "一键导出备份";
+                                    clicked => { root.lex-export(); }
                                 }
                             }
                         }

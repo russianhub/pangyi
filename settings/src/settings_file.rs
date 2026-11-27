@@ -7,7 +7,7 @@
 //! 注释、空行、未知键、隐藏的 `debug` 和它们的顺序都留着。
 //! 文件还不存在时才写出全部已知键。先写同目录临时文件，再改名替换。
 
-use std::fs::{self, File};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -285,12 +285,13 @@ pub fn write_atomic(path: &Path, body: &str) -> io::Result<()> {
         std::process::id(),
         unique_stamp()
     ));
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
     let write_result = (|| {
-        let mut file = File::create(&tmp)?;
         file.write_all(body.as_bytes())?;
         file.sync_all()?;
         Ok(())
     })();
+    drop(file);
     if let Err(err) = write_result {
         let _ = fs::remove_file(&tmp);
         return Err(err);

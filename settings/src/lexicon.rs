@@ -1,11 +1,17 @@
 //! 编辑输入法已有的本机词库文件。
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs;
+use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::settings_file::write_atomic;
+
+#[path = "../../shared/lexicon_backup.rs"]
+mod backup;
+use backup::{lock, snapshot_locked, GLOSSES_FILE, WORDS_FILE};
 
 #[path = "../../shared/lexicon_format.rs"]
 mod format;
@@ -22,8 +28,8 @@ pub enum LexiconKind {
 impl LexiconKind {
     fn filename(self) -> &'static str {
         match self {
-            Self::Words => "user-dict.tsv",
-            Self::Glosses => "user-gloss.tsv",
+            Self::Words => WORDS_FILE,
+            Self::Glosses => GLOSSES_FILE,
         }
     }
 }
@@ -181,16 +187,9 @@ pub fn lexicon_entries(dir: &Path, kind: LexiconKind) -> io::Result<Vec<LexiconE
     Ok(entries)
 }
 
-fn lock(dir: &Path) -> io::Result<File> {
-    fs::create_dir_all(dir)?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(dir.join("lexicon-edit.lock"))?;
-    lock.lock()?;
-    Ok(lock)
+pub fn export_backup(dir: &Path) -> io::Result<PathBuf> {
+    let _lock = lock(dir)?;
+    snapshot_locked(dir, true)?.ok_or_else(|| invalid("没有生成备份"))
 }
 
 pub fn edit_lexicon(
@@ -472,6 +471,7 @@ pub fn commit_import(dir: &Path, preview: &ImportPreview) -> io::Result<()> {
         return Err(invalid("预览后词库已修改，请重新生成预览"));
     }
     if preview.has_changes() {
+        snapshot_locked(dir, false)?;
         write_atomic(&path, &preview.after)?;
     }
     Ok(())
@@ -614,6 +614,70 @@ mod tests {
         for (index, issue) in plan.issues.iter().enumerate() {
             assert!(issue.starts_with(&format!("第 {} 行", index + 1)));
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn backups_preserve_both_files_and_only_prune_automatic_history() {
+        let dir = test_dir("lex-backups");
+        let words = dir.join(WORDS_FILE);
+        let gloss = dir.join(GLOSSES_FILE);
+        fs::write(&words, "\u{feff}甲\tjia\r\n").unwrap();
+        fs::write(&gloss, "甲\tjia\tпервый\r\n").unwrap();
+        let exported = export_backup(&dir).unwrap();
+        assert_eq!(
+            fs::read(exported.join(WORDS_FILE)).unwrap(),
+            fs::read(&words).unwrap()
+        );
+        assert_eq!(
+            fs::read(exported.join(GLOSSES_FILE)).unwrap(),
+            fs::read(&gloss).unwrap()
+        );
+        for index in 0..7 {
+            let text = format!("甲\tjia\t{index}");
+            let plan = preview_import(
+                &dir,
+                LexiconKind::Words,
+                text.as_bytes(),
+                DuplicatePolicy::Replace,
+            )
+            .unwrap();
+            commit_import(&dir, &plan).unwrap();
+        }
+        backup::automatic_upgrade_backup(&dir).unwrap();
+        let root = exported.parent().unwrap();
+        let mut automatic = fs::read_dir(root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("auto-"))
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        automatic.sort();
+        assert_eq!(automatic.len(), 5);
+        assert_eq!(
+            fs::read(automatic.last().unwrap().join(WORDS_FILE)).unwrap(),
+            fs::read(&words).unwrap()
+        );
+        assert!(exported.is_dir());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn import_write_waits_for_successful_backup() {
+        let dir = test_dir("lex-backup-error");
+        let path = dir.join(WORDS_FILE);
+        let old = "甲\tjia\n";
+        fs::write(&path, old).unwrap();
+        fs::write(dir.join("lexicon-backups"), "占用").unwrap();
+        let plan = preview_import(
+            &dir,
+            LexiconKind::Words,
+            "乙\tyi".as_bytes(),
+            DuplicatePolicy::Skip,
+        )
+        .unwrap();
+        assert!(commit_import(&dir, &plan).is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), old);
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use pangyi_settings::{
-    commit_import, edit_lexicon, lexicon_entries, load_counts, preview_import, read_import,
-    DuplicatePolicy, ImportPreview, LexiconEntry, LexiconKind,
+    commit_import, edit_lexicon, export_backup, lexicon_entries, load_counts, preview_import,
+    read_import, DuplicatePolicy, ImportPreview, LexiconEntry, LexiconKind,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -232,6 +232,19 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
                 ui.set_status(format!("导入失败：{error}").into());
                 ui.invoke_lex_preview();
             }
+        }
+    });
+
+    let weak = ui.as_weak();
+    let folder = dir.to_path_buf();
+    ui.on_lex_export(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        match export_backup(&folder) {
+            Ok(path) => {
+                let _ = crate::open_target(&pangyi_settings::OpenTarget::Directory(path.clone()));
+                ui.set_status(format!("备份已导出到 {}", path.display()).into());
+            }
+            Err(error) => ui.set_status(format!("导出备份失败：{error}").into()),
         }
     });
 
