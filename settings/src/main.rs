@@ -6,6 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod lexicon_ui;
+
 use pangyi_settings::{
     accent_strong, data_dir, effective_dark, ensure_phrases_file, existing_file_or_dir,
     format_count, load_counts, load_dir, packs_dir, phrase_path, preview_palette, scaled_px,
@@ -42,6 +44,7 @@ fn run() -> Result<(), slint::PlatformError> {
 
 fn wire(ui: &MainWindow, dir: PathBuf) {
     let ui_weak = ui.as_weak();
+    lexicon_ui::wire(ui, &dir);
 
     let dir_max = dir.clone();
     let weak = ui_weak.clone();
@@ -213,6 +216,7 @@ fn wire(ui: &MainWindow, dir: PathBuf) {
     ui.on_lexicon_shown(move || {
         if let Some(ui) = weak.upgrade() {
             push_stats(&ui, &load_counts(&dir_stats));
+            ui.invoke_lex_filter();
         }
     });
 

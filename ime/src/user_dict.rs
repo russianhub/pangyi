@@ -17,21 +17,15 @@ use std::time::SystemTime;
 
 use crate::dict::Hit;
 
-/// 每个文件最多读这么多字节。再大就截断并记一条警告，避免一个巨大文件拖住启动。
-pub(crate) const MAX_BYTES: usize = 256 * 1024;
-/// 每个文件最多收下这么多数据行（空行和 # 注释不计）。
-pub(crate) const MAX_DATA_LINES: usize = 5_000;
+#[path = "../../shared/lexicon_format.rs"]
+mod format;
+use self::format::{validate_head, Reading};
+pub(crate) use self::format::{
+    analyze_reading, parse_weight, MAX_BYTES, MAX_DATA_LINES, MAX_GLOSS_CHARS,
+};
+
 /// 警告列表最多留这么多条具体说明，再多就加一行「还有更多」。
 pub(crate) const MAX_WARNINGS: usize = 32;
-/// 词头最多多少个 Unicode 字符。
-const MAX_HEAD_CHARS: usize = 32;
-/// 俄语列最多多少个 Unicode 字符。
-pub(crate) const MAX_GLOSS_CHARS: usize = 400;
-/// 去掉声调之后的拼音字母最多多少个。
-pub(crate) const MAX_READING_CHARS: usize = 48;
-/// 权重要落在这个闭区间里。
-pub(crate) const MIN_WEIGHT: i64 = -9_999;
-pub(crate) const MAX_WEIGHT: i64 = 9_999;
 /// 大于等于这个数，用户词才能排到「该拼音内置精确第一候选」前面。
 pub(crate) const LEAD_WEIGHT: i64 = 100;
 /// 两次查看文件修改时间的最小间隔。
@@ -717,19 +711,8 @@ fn check_head(
     head: &str,
     warnings: &mut Vec<String>,
 ) -> Option<String> {
-    if head.is_empty() {
-        push_warning(warnings, format!("{file}:{line_no}: 词头为空"));
-        return None;
-    }
-    if head.chars().count() > MAX_HEAD_CHARS {
-        push_warning(
-            warnings,
-            format!("{file}:{line_no}: 词头超过 {MAX_HEAD_CHARS} 个字符"),
-        );
-        return None;
-    }
-    if !has_han(head) {
-        push_warning(warnings, format!("{file}:{line_no}: 词头里要有汉字"));
+    if let Err(message) = validate_head(head) {
+        push_warning(warnings, format!("{file}:{line_no}: {message}"));
         return None;
     }
     Some(head.to_string())
@@ -748,20 +731,6 @@ fn check_reading(
             None
         }
     }
-}
-
-pub(crate) fn parse_weight(s: &str) -> Result<Option<i64>, &'static str> {
-    if s.is_empty() {
-        return Ok(None);
-    }
-    let n: i64 = match s.parse() {
-        Ok(n) => n,
-        Err(_) => return Err("权重不是整数"),
-    };
-    if !(MIN_WEIGHT..=MAX_WEIGHT).contains(&n) {
-        return Err("权重超出 -9999 到 9999");
-    }
-    Ok(Some(n))
 }
 
 fn gloss_file_ru(
@@ -812,147 +781,6 @@ pub(crate) fn push_warning(out: &mut Vec<String>, msg: String) {
     } else if out.len() == MAX_WARNINGS {
         out.push("还有更多问题没有列出。".to_string());
     }
-}
-
-pub(crate) struct Reading {
-    pub(crate) ascii: String,
-    pub(crate) tone: String,
-    pub(crate) raw: String,
-}
-
-pub(crate) fn analyze_reading(raw: &str) -> Result<Reading, &'static str> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err("读音为空");
-    }
-    if raw.chars().count() > 64 {
-        return Err("读音太长");
-    }
-    let mut ascii = String::new();
-    let mut tone = String::new();
-    for c in raw.chars() {
-        if c == '\'' || c == '\u{2019}' {
-            continue;
-        }
-        if matches!(c, '0'..='5') {
-            tone.push(if c == '0' { '5' } else { c });
-            continue;
-        }
-        if c.is_ascii_digit() {
-            return Err("读音里的数字只能是声调 0–5");
-        }
-        if c == '\u{0308}' {
-            // u + 分音符 = ü，输入时用 v。
-            if ascii.pop() == Some('u') {
-                ascii.push('v');
-                continue;
-            }
-            return Err("读音里有无法识别的字符");
-        }
-        if let Some(t) = combining_tone(c) {
-            tone.push(char::from(b'0' + t));
-            continue;
-        }
-        match tone_letter(c) {
-            Some((base, t)) => {
-                ascii.push(base);
-                if t > 0 {
-                    tone.push(char::from(b'0' + t));
-                }
-            }
-            None => return Err("读音里有无法识别的字符"),
-        }
-    }
-    if ascii.is_empty()
-        || ascii.len() > MAX_READING_CHARS
-        || !ascii.bytes().all(|b| b.is_ascii_lowercase())
-    {
-        return Err("读音不是拼音");
-    }
-    Ok(Reading {
-        ascii,
-        tone,
-        raw: raw.to_string(),
-    })
-}
-
-fn tone_letter(c: char) -> Option<(char, u8)> {
-    Some(match c {
-        'a' | 'A' => ('a', 0),
-        'ā' | 'Ā' => ('a', 1),
-        'á' | 'Á' => ('a', 2),
-        'ǎ' | 'Ǎ' => ('a', 3),
-        'à' | 'À' => ('a', 4),
-        'e' | 'E' => ('e', 0),
-        'ē' | 'Ē' => ('e', 1),
-        'é' | 'É' => ('e', 2),
-        'ě' | 'Ě' => ('e', 3),
-        'è' | 'È' => ('e', 4),
-        'i' | 'I' => ('i', 0),
-        'ī' | 'Ī' => ('i', 1),
-        'í' | 'Í' => ('i', 2),
-        'ǐ' | 'Ǐ' => ('i', 3),
-        'ì' | 'Ì' => ('i', 4),
-        'o' | 'O' => ('o', 0),
-        'ō' | 'Ō' => ('o', 1),
-        'ó' | 'Ó' => ('o', 2),
-        'ǒ' | 'Ǒ' => ('o', 3),
-        'ò' | 'Ò' => ('o', 4),
-        'u' | 'U' => ('u', 0),
-        'ū' | 'Ū' => ('u', 1),
-        'ú' | 'Ú' => ('u', 2),
-        'ǔ' | 'Ǔ' => ('u', 3),
-        'ù' | 'Ù' => ('u', 4),
-        'ü' | 'Ü' | 'v' | 'V' => ('v', 0),
-        'ǖ' | 'Ǖ' => ('v', 1),
-        'ǘ' | 'Ǘ' => ('v', 2),
-        'ǚ' | 'Ǚ' => ('v', 3),
-        'ǜ' | 'Ǜ' => ('v', 4),
-        'n' | 'N' => ('n', 0),
-        'ń' | 'Ń' => ('n', 2),
-        'ň' | 'Ň' => ('n', 3),
-        'ǹ' | 'Ǹ' => ('n', 4),
-        'm' | 'M' => ('m', 0),
-        'ḿ' | 'Ḿ' => ('m', 2),
-        'b' | 'B' => ('b', 0),
-        'c' | 'C' => ('c', 0),
-        'd' | 'D' => ('d', 0),
-        'f' | 'F' => ('f', 0),
-        'g' | 'G' => ('g', 0),
-        'h' | 'H' => ('h', 0),
-        'j' | 'J' => ('j', 0),
-        'k' | 'K' => ('k', 0),
-        'l' | 'L' => ('l', 0),
-        'p' | 'P' => ('p', 0),
-        'q' | 'Q' => ('q', 0),
-        'r' | 'R' => ('r', 0),
-        's' | 'S' => ('s', 0),
-        't' | 'T' => ('t', 0),
-        'w' | 'W' => ('w', 0),
-        'x' | 'X' => ('x', 0),
-        'y' | 'Y' => ('y', 0),
-        'z' | 'Z' => ('z', 0),
-        _ => return None,
-    })
-}
-
-fn combining_tone(c: char) -> Option<u8> {
-    Some(match c {
-        '\u{0304}' => 1,
-        '\u{0301}' => 2,
-        '\u{030c}' => 3,
-        '\u{0300}' => 4,
-        _ => return None,
-    })
-}
-
-fn has_han(s: &str) -> bool {
-    s.chars().any(|c| {
-        ('\u{3400}'..='\u{9FFF}').contains(&c)
-            || ('\u{F900}'..='\u{FAFF}').contains(&c)
-            || ('\u{20000}'..='\u{2CEAF}').contains(&c)
-            || c == '\u{3007}'
-    })
 }
 
 fn ascii_key(py: &str) -> Cow<'_, str> {
@@ -1734,6 +1562,29 @@ abc\tchang\t俄语\n\
         assert_eq!(lead + 1, top);
         assert_eq!(follow, top + 1);
         assert!(hits[..lead].iter().all(|h| !h.exact));
+    }
+
+    #[test]
+    fn travel_dictionary_and_personal_trigger_reach_candidates() {
+        let combined = concat!(
+            include_str!("../../dictionaries/travel.tsv"),
+            "登机口\tmygate\tмой выход\t100\n",
+        );
+        let r = parse(combined, "登机口\tdengjikou\tмой выход на посадку\n");
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        let _guard = install(r.snap);
+
+        for (trigger, russian) in [
+            ("dengjikou", "мой выход на посадку"),
+            ("mygate", "мой выход"),
+            ("dengjipai", "посадочный талон"),
+        ] {
+            let hits = crate::dict::lookup(trigger);
+            assert!(
+                hits.iter().any(|hit| hit.exact && hit.ru == russian),
+                "missing {trigger}: {russian}"
+            );
+        }
     }
 
     #[test]
