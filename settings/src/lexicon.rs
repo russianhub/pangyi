@@ -114,7 +114,7 @@ fn is_data(line: &str) -> bool {
 }
 
 fn parse_line(line: &str, kind: LexiconKind) -> Result<(Key, LexiconEntry), &'static str> {
-    let mut fields = line.trim_end_matches(['\r', '\n']).split('\t');
+    let mut fields = line.split('\t');
     if fields
         .clone()
         .any(|field| field.chars().any(char::is_control))
@@ -184,6 +184,10 @@ fn read_local(path: &Path) -> io::Result<String> {
 }
 
 const THEME_TAG: &str = "# pangyi-theme\t";
+
+fn theme_tag(row: &LexiconEntry) -> String {
+    format!("{THEME_TAG}{}\t{}\t{}", row.head, row.reading, row.theme)
+}
 
 fn theme_line(line: &str, kind: LexiconKind) -> Option<(Key, &str)> {
     let (head, rest) = line
@@ -294,16 +298,27 @@ fn rewrite_rows(
     appended: Vec<&LexiconEntry>,
 ) -> String {
     let body = strip_bom(text);
+    let tagged_keys: HashSet<_> = updates
+        .keys()
+        .cloned()
+        .chain(
+            updates
+                .values()
+                .flatten()
+                .chain(appended.iter())
+                .filter_map(|row| row.key(kind).ok()),
+        )
+        .collect();
     let mut seen = HashSet::new();
     let mut output = Vec::new();
     for line in body.split_inclusive('\n').rev() {
         if let Some((key, _)) = theme_line(line, kind) {
-            if updates.contains_key(&key) {
+            if tagged_keys.contains(&key) {
                 continue;
             }
         }
         if is_data(line) {
-            if let Ok((key, _)) = parse_line(line, kind) {
+            if let Ok((key, _)) = parse_line(without_ending(line), kind) {
                 if let Some(row) = updates.get(&key) {
                     if let Some(row) = row.filter(|_| seen.insert(key)) {
                         output.push(format!("{}{}", row.line(), line_ending(line)));
@@ -332,11 +347,7 @@ fn rewrite_rows(
         .collect();
     tags.sort_by(|a, b| (&a.head, &a.reading).cmp(&(&b.head, &b.reading)));
     for row in tags {
-        append_line(
-            &mut after,
-            &format!("{THEME_TAG}{}\t{}\t{}", row.head, row.reading, row.theme),
-            newline,
-        );
+        append_line(&mut after, &theme_tag(row), newline);
     }
     after
 }
@@ -495,6 +506,92 @@ fn merge_entry(existing: &LexiconEntry, incoming: &LexiconEntry) -> LexiconEntry
     merged
 }
 
+#[derive(Default)]
+struct RowCost {
+    bytes: usize,
+    lines: usize,
+    ending: usize,
+}
+
+struct ImportBudget {
+    bytes: usize,
+    lines: usize,
+    newline: usize,
+    existing: HashMap<Key, RowCost>,
+}
+
+impl ImportBudget {
+    fn new(text: &str, kind: LexiconKind) -> Self {
+        let newline = newline_style(text).len();
+        let body = strip_bom(text);
+        // Appending can need one separator if the old file lacked a final newline.
+        let separator = if !body.is_empty() && !body.ends_with('\n') {
+            newline
+        } else {
+            0
+        };
+        let mut budget = Self {
+            bytes: text.len() + separator,
+            lines: 0,
+            newline,
+            existing: HashMap::new(),
+        };
+        for line in body.split_inclusive('\n') {
+            if let Some((key, _)) = theme_line(line, kind) {
+                budget.existing.entry(key).or_default().bytes += line.len();
+            } else if is_data(line) {
+                budget.lines += 1;
+                if let Ok((key, _)) = parse_line(without_ending(line), kind) {
+                    let cost = budget.existing.entry(key).or_default();
+                    cost.bytes += line.len();
+                    cost.lines += 1;
+                    cost.ending = line_ending(line).len();
+                }
+            }
+        }
+        budget
+    }
+
+    fn accept(&mut self, key: &Key, entry: &LexiconEntry) -> bool {
+        let old = self.existing.entry(key.clone()).or_insert_with(|| RowCost {
+            ending: self.newline,
+            ..RowCost::default()
+        });
+        let ending = if old.lines == 0 {
+            self.newline
+        } else {
+            old.ending
+        };
+        let tag = if entry.theme.is_empty() {
+            0
+        } else {
+            theme_tag(entry).len() + self.newline
+        };
+        let row = entry.line().len() + ending + tag;
+        let bytes = self.bytes - old.bytes + row;
+        let lines = self.lines - old.lines + 1;
+        if bytes > MAX_BYTES || lines > MAX_DATA_LINES {
+            return false;
+        }
+        self.bytes = bytes;
+        self.lines = lines;
+        *old = RowCost {
+            bytes: row,
+            lines: 1,
+            ending,
+        };
+        true
+    }
+}
+
+fn report_import_issue(issues: &mut Vec<String>, omitted: &mut usize, line: usize, message: &str) {
+    if issues.len() < 100 {
+        issues.push(format!("第 {line} 行：{message}"));
+    } else {
+        *omitted += 1;
+    }
+}
+
 pub fn preview_import(
     dir: &Path,
     kind: LexiconKind,
@@ -516,6 +613,7 @@ pub fn preview_import(
     };
     let before = read_local(&dir.join(kind.filename()))?;
     let baseline = rows(&before, kind);
+    let mut budget = ImportBudget::new(&before, kind);
     let mut current = baseline.clone();
     let mut updates = HashMap::new();
     let mut new_order = Vec::new();
@@ -540,57 +638,59 @@ pub fn preview_import(
             Ok(None) => continue,
             Err(message) => {
                 skipped += 1;
-                if issues.len() < 100 {
-                    issues.push(format!("第 {} 行：{message}", index + 1));
-                } else {
-                    omitted += 1;
-                }
+                report_import_issue(&mut issues, &mut omitted, index + 1, message);
                 continue;
             }
         };
         incoming.theme = theme.to_owned();
-        let entry = match current.get(&key) {
-            None => {
-                added += 1;
-                new_order.push(key.clone());
+        let existing = current.get(&key);
+        let entry = match (existing, policy) {
+            (None, _) => incoming,
+            (Some(_), DuplicatePolicy::Skip) => {
+                skipped += 1;
+                continue;
+            }
+            (Some(existing), DuplicatePolicy::Replace) => {
+                if incoming.theme.is_empty() {
+                    incoming.theme.clone_from(&existing.theme);
+                }
                 incoming
             }
-            Some(existing) => {
-                let next = match policy {
-                    DuplicatePolicy::Skip => existing.clone(),
-                    DuplicatePolicy::Replace => {
-                        if incoming.theme.is_empty() {
-                            incoming.theme.clone_from(&existing.theme);
-                        }
-                        incoming
-                    }
-                    DuplicatePolicy::Merge => merge_entry(existing, &incoming),
-                };
-                if let Err(message) = next.key(kind) {
-                    skipped += 1;
-                    if issues.len() < 100 {
-                        issues.push(format!("第 {} 行：合并后{message}", index + 1));
-                    } else {
-                        omitted += 1;
-                    }
-                    continue;
-                }
-                if &next == existing {
-                    skipped += 1;
-                    continue;
-                }
-                match policy {
-                    DuplicatePolicy::Replace => {
-                        replaced.insert(key.clone());
-                    }
-                    DuplicatePolicy::Merge => {
-                        merged.insert(key.clone());
-                    }
-                    DuplicatePolicy::Skip => {}
-                }
-                next
-            }
+            (Some(existing), DuplicatePolicy::Merge) => merge_entry(existing, &incoming),
         };
+        if existing == Some(&entry) {
+            skipped += 1;
+            continue;
+        }
+        if let Err(message) = entry.key(kind) {
+            skipped += 1;
+            report_import_issue(&mut issues, &mut omitted, index + 1, message);
+            continue;
+        }
+        if !budget.accept(&key, &entry) {
+            skipped += 1;
+            report_import_issue(
+                &mut issues,
+                &mut omitted,
+                index + 1,
+                "超过本机词库容量（256 KiB 或 5000 行）",
+            );
+            continue;
+        }
+        if existing.is_none() {
+            added += 1;
+            new_order.push(key.clone());
+        } else if baseline.contains_key(&key) {
+            match policy {
+                DuplicatePolicy::Replace => {
+                    replaced.insert(key.clone());
+                }
+                DuplicatePolicy::Merge => {
+                    merged.insert(key.clone());
+                }
+                DuplicatePolicy::Skip => {}
+            }
+        }
         current.insert(key.clone(), entry.clone());
         updates.insert(key, entry);
     }
@@ -598,9 +698,6 @@ pub fn preview_import(
         issues.push(format!("另有 {omitted} 条问题"));
     }
 
-    updates.retain(|key, row| baseline.get(key) != Some(row));
-    replaced.retain(|key| baseline.contains_key(key) && updates.contains_key(key));
-    merged.retain(|key| baseline.contains_key(key) && updates.contains_key(key));
     let appended = new_order.iter().map(|key| &updates[key]).collect();
     let replacements = updates
         .iter()
@@ -630,6 +727,10 @@ fn line_ending(line: &str) -> &'static str {
     } else {
         ""
     }
+}
+
+fn without_ending(line: &str) -> &str {
+    &line[..line.len() - line_ending(line).len()]
 }
 
 pub fn commit_import(dir: &Path, preview: &ImportPreview) -> io::Result<Option<UndoChange>> {
@@ -965,6 +1066,99 @@ mod tests {
         assert!(entries
             .iter()
             .any(|row| row.head == "乙" && row.theme == "文件名"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn overflow_skips_only_rows_that_do_not_fit() {
+        let dir = test_dir("lex-capacity");
+        let kind = LexiconKind::Words;
+        let path = dir.join(WORDS_FILE);
+        let mut current = "#".repeat(MAX_BYTES - 52);
+        current.push_str("\r\n");
+        fs::write(&path, current).unwrap();
+        let input = format!("甲\tjia\t{}\r\n乙\tyi", "я".repeat(50));
+        let plan = preview_import(&dir, kind, input.as_bytes(), DuplicatePolicy::Skip, "").unwrap();
+        assert_eq!((plan.added, plan.skipped), (1, 1));
+        assert!(plan.issues[0].contains("第 1 行"));
+        commit_import(&dir, &plan).unwrap();
+        assert_eq!(lexicon_entries(&dir, kind).unwrap()[0].head, "乙");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unicode_paths_crlf_and_lock_contention_preserve_data() {
+        let parent = test_dir("lex-windows");
+        let dir = parent.join("旁 译 · Русский");
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join(WORDS_FILE);
+        let text = "\u{feff}# 旧词库\r\n甲\tjia\tпервый\r\n";
+        fs::write(&path, text).unwrap();
+        let source = dir.join("导入 俄语.tsv");
+        fs::write(&source, "\u{feff}乙\tyi\tвторой\r\n").unwrap();
+        let plan = preview_import(
+            &dir,
+            LexiconKind::Words,
+            &read_import(&source).unwrap(),
+            DuplicatePolicy::Skip,
+            "",
+        )
+        .unwrap();
+        let held = lock(&dir).unwrap();
+        match commit_import(&dir, &plan) {
+            Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+            Ok(_) => panic!("concurrent write should be blocked"),
+        }
+        assert_eq!(fs::read(&path).unwrap(), text.as_bytes());
+        drop(held);
+        commit_import(&dir, &plan).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{text}乙\tyi\tвторой\t\r\n")
+        );
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exclusive_windows_handle_leaves_complete_data_and_recovers() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = test_dir("lex-share-delete");
+        let path = dir.join(WORDS_FILE);
+        let old = "甲\tjia\r\n";
+        let next = format!("{old}乙\tyi\r\n");
+        fs::write(&path, old).unwrap();
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        let edit = edit_lexicon(
+            &dir,
+            LexiconKind::Words,
+            None,
+            Some(entry("乙", "yi", "", "")),
+        );
+        assert!(
+            edit.is_err(),
+            "exclusive handle should block reading the current dictionary"
+        );
+        let replaced = write_atomic(&path, &next).is_ok();
+        assert!(fs::read_dir(&dir).unwrap().all(|entry| !entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_some_and(|ext| ext == "tmp")));
+        drop(held);
+        // Windows volumes differ in whether they support replacing an open file.
+        // Either way, the destination is always one complete snapshot.
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            if replaced { next.as_str() } else { old }
+        );
+        write_atomic(&path, &next).unwrap();
+        assert_eq!(lexicon_entries(&dir, LexiconKind::Words).unwrap().len(), 2);
         fs::remove_dir_all(dir).unwrap();
     }
 

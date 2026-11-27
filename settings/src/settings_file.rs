@@ -82,8 +82,12 @@ pub fn pangyi_dir(local_app_data: &str) -> PathBuf {
 }
 
 pub fn data_dir() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
-    pangyi_dir(&base)
+    std::env::var_os("LOCALAPPDATA")
+        .filter(|base| !base.is_empty())
+        .map_or_else(
+            || PathBuf::from("Pangyi"),
+            |base| PathBuf::from(base).join("Pangyi"),
+        )
 }
 
 pub fn settings_path(dir: &Path) -> PathBuf {
@@ -276,15 +280,13 @@ pub fn write_atomic(path: &Path, body: &str) -> io::Result<()> {
         .parent()
         .filter(|dir| !dir.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("settings.txt");
-    let tmp = dir.join(format!(
-        ".{file_name}.{}.{}.tmp",
-        std::process::id(),
-        unique_stamp()
-    ));
+    let mut file_name = std::ffi::OsString::from(".");
+    file_name.push(
+        path.file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("settings.txt")),
+    );
+    file_name.push(format!(".{}.{}.tmp", std::process::id(), unique_stamp()));
+    let tmp = dir.join(file_name);
     let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
     let write_result = (|| {
         file.write_all(body.as_bytes())?;
@@ -296,13 +298,29 @@ pub fn write_atomic(path: &Path, body: &str) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(err);
     }
-    match fs::rename(&tmp, path) {
+    match replace_file(&tmp, path) {
         Ok(()) => Ok(()),
         Err(err) => {
             let _ = fs::remove_file(&tmp);
             Err(err)
         }
     }
+}
+
+fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        // 编辑器和安全软件可能短暂持有不允许删除共享的句柄。
+        for _ in 0..5 {
+            match fs::rename(source, target) {
+                Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                result => return result,
+            }
+        }
+    }
+    fs::rename(source, target)
 }
 
 fn apply_text(settings: &mut Settings, text: &str) {

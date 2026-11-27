@@ -1,9 +1,9 @@
 //! 本机词库快照，供设置程序和安装器共用。
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(crate) const WORDS_FILE: &str = "user-dict.tsv";
 pub(crate) const GLOSSES_FILE: &str = "user-gloss.tsv";
@@ -18,8 +18,22 @@ pub(crate) fn lock(dir: &Path) -> io::Result<File> {
         .create(true)
         .truncate(false)
         .open(dir.join("lexicon-edit.lock"))?;
-    file.lock()?;
-    Ok(file)
+    for attempt in 0..=5 {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) if attempt < 5 => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "词库正在被另一个旁译窗口修改，请稍后再试",
+                ));
+            }
+            Err(TryLockError::Error(error)) => return Err(error),
+        }
+    }
+    unreachable!()
 }
 
 #[allow(dead_code)] // 安装器调用；设置侧在测试中复用。

@@ -113,6 +113,7 @@ struct LoadState {
     gloss_mtime: Option<SystemTime>,
     last_check_ms: u64,
     loaded: bool,
+    retry_pending: bool,
 }
 
 impl LoadState {
@@ -123,6 +124,7 @@ impl LoadState {
             gloss_mtime: None,
             last_check_ms: 0,
             loaded: false,
+            retry_pending: false,
         }
     }
 }
@@ -222,7 +224,8 @@ fn poll(state: &mut LoadState, dir: &Path, now: u64, force: bool) {
     ensure_template(&gloss_path, GLOSS_TEMPLATE, &mut warnings);
     let dict_mtime = mtime(&dict_path);
     let gloss_mtime = mtime(&gloss_path);
-    if state.loaded && !force && state.dict_mtime == dict_mtime && state.gloss_mtime == gloss_mtime
+    if state.loaded && !force && !state.retry_pending
+        && state.dict_mtime == dict_mtime && state.gloss_mtime == gloss_mtime
     {
         if !warnings.is_empty() {
             // 模板没写成，但仍把这条警告留下。已有快照不动。
@@ -237,6 +240,7 @@ fn poll(state: &mut LoadState, dir: &Path, now: u64, force: bool) {
             state.dict_mtime = dict_mtime;
             state.gloss_mtime = gloss_mtime;
             state.loaded = true;
+            state.retry_pending = false;
             write_warnings(dir, &warnings);
             crate::log(&format!(
                 "user-dict 已读入：{} 个拼音，{} 条警告",
@@ -248,8 +252,7 @@ fn poll(state: &mut LoadState, dir: &Path, now: u64, force: bool) {
             warnings.extend(err);
             // 读失败时留着上一份，避免用户正保存文件时把词库清空。
             state.loaded = true;
-            state.dict_mtime = dict_mtime;
-            state.gloss_mtime = gloss_mtime;
+            state.retry_pending = true;
             write_warnings(dir, &warnings);
             crate::log("user-dict 读取失败，继续用上一份");
         }
@@ -1680,5 +1683,12 @@ abc\tchang\t俄语\n\
         );
         let text = std::fs::read_to_string(tmp.path.join(WARN_FILE)).unwrap();
         assert!(text.contains("不是文件") || text.contains("无法"), "{text}");
+        std::fs::remove_dir(&dict).unwrap();
+        std::fs::write(&dict, "乙\tyi\tДВА\n").unwrap();
+        set_mtime(&dict, 50_000); // 故意恢复旧时间，验证占用解除后仍会重读。
+        poll(&mut state, &tmp.path, 6_000, false);
+        assert!(state.snap.words.contains_key("yi"));
+        assert!(!state.snap.words.contains_key("jia"));
+        assert!(!tmp.path.join(WARN_FILE).exists());
     }
 }
