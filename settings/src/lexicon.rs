@@ -13,7 +13,7 @@ mod history;
 pub use history::{undo_action, undo_last};
 
 #[path = "../../shared/lexicon_backup.rs"]
-mod backup;
+pub(crate) mod backup;
 use backup::{lock, snapshot_locked, GLOSSES_FILE, WORDS_FILE};
 
 #[path = "../../shared/lexicon_format.rs"]
@@ -171,7 +171,7 @@ fn check_size(text: &str) -> io::Result<()> {
 
 const MAX_IMPORT_BYTES: usize = 4 * 1024 * 1024;
 
-fn read_capped(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+pub(crate) fn read_capped(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)?
         .take((limit + 1) as u64)
@@ -314,12 +314,15 @@ pub fn edit_lexicon(
 
 /// Add a candidate without replacing any existing custom entry.
 pub fn quick_add_word(dir: &Path, candidate: crate::quick_add::Candidate) -> io::Result<bool> {
-    let mut entry = LexiconEntry {
+    add_word_with_undo(dir, LexiconEntry {
         head: candidate.head,
         reading: candidate.reading,
         russian: candidate.russian,
         ..Default::default()
-    };
+    })
+}
+
+pub(crate) fn add_word_with_undo(dir: &Path, mut entry: LexiconEntry) -> io::Result<bool> {
     entry.normalize();
     let kind = LexiconKind::Words;
     let key = entry.key(kind).map_err(invalid)?;

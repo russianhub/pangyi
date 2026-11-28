@@ -1,6 +1,9 @@
+mod learned_index;
+
 fn main() {
     let manifest = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     build_busy_readings(&manifest);
+    learned_index::build(&manifest);
     let ui = manifest.join("ui/app.slint");
     println!("cargo:rerun-if-changed={}", ui.display());
     // fluent 而不是 fluent-light / fluent-dark，深浅色留给运行时的 Palette.color-scheme。

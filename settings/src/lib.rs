@@ -6,6 +6,7 @@
 
 mod colors;
 mod lexicon;
+pub mod learned;
 mod local_files;
 mod settings_file;
 mod updater_cfg;
