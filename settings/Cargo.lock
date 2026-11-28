@@ -3075,7 +3075,7 @@ dependencies = [
 
 [[package]]
 name = "pangyi-settings"
-version = "4.20.0"
+version = "4.21.0"
 dependencies = [
  "miniz_oxide 0.9.1",
  "serde",
