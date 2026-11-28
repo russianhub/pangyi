@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::io::Read;
 
 mod lexicon_ui;
 
@@ -17,10 +18,21 @@ use pangyi_settings::{
 };
 use slint::ComponentHandle;
 use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+use pangyi_settings::quick_add;
 
 slint::include_modules!();
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some(quick_add::COMMAND) {
+        let result = serde_json::from_reader(std::io::stdin().lock().take(quick_add::MAX_REQUEST_BYTES + 1))
+            .map_err(std::io::Error::other)
+            .and_then(|candidate| pangyi_settings::quick_add_word(&data_dir(), candidate));
+        std::process::exit(match result {
+            Ok(true) => 0,
+            Ok(false) => quick_add::EXISTS,
+            Err(_) => quick_add::FAILED,
+        });
+    }
     if let Err(err) = run() {
         let message = format!(
             "旁译设置打不开。这台电脑没有可用的 OpenGL，界面不能退回到缺字的软件渲染。\n\n{err}"
@@ -33,6 +45,8 @@ fn main() {
 
 fn run() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
+    let dir = data_dir();
+    let focus_dir = dir.clone();
     let weak = ui.as_weak();
     ui.window().on_winit_window_event(move |_, event| {
         if let Some(ui) = weak.upgrade() {
@@ -43,13 +57,15 @@ fn run() -> Result<(), slint::PlatformError> {
                 WindowEvent::MouseInput { state, .. } if state.is_pressed() => {
                     ui.set_lex_keyboard_focus(false);
                 }
+                WindowEvent::Focused(true) if ui.get_page() == 3 => {
+                    lexicon_ui::refresh_external(&ui, &focus_dir);
+                }
                 _ => {}
             }
         }
         EventResult::Propagate
     });
     ui.set_version(env!("CARGO_PKG_VERSION").into());
-    let dir = data_dir();
     wire(&ui, dir.clone());
     if let Err(err) = refresh(&ui, &dir) {
         ui.set_status(format!("没能读取设置：{err}").into());
@@ -62,6 +78,17 @@ fn wire(ui: &MainWindow, dir: PathBuf) {
     let ui_weak = ui.as_weak();
     lexicon_ui::wire(ui, &dir);
 
+    let path = dir.clone();
+    let weak = ui_weak.clone();
+    ui.on_quick_add_toggled(move |enabled| {
+        act(&weak, &path, save_key(&path, "quick_add", bit(enabled), |s| s.quick_add == enabled));
+    });
+    let path = dir.clone();
+    let weak = ui_weak.clone();
+    ui.on_quick_add_key_selected(move |index| {
+        let key = index + 1;
+        act(&weak, &path, save_key(&path, "quick_add_key", &key.to_string(), |s| i32::from(s.quick_add_key) == key));
+    });
     let dir_max = dir.clone();
     let weak = ui_weak.clone();
     ui.on_max_selected(move |index| {
@@ -330,6 +357,8 @@ fn push_settings(ui: &MainWindow, settings: &Settings, system_dark: bool) {
     ui.set_cnpunct(settings.cnpunct);
     ui.set_english(settings.english);
     ui.set_emoji(settings.emoji);
+    ui.set_quick_add(settings.quick_add);
+    ui.set_quick_add_key_index(i32::from(settings.quick_add_key) - 1);
     ui.set_layout_index(pangyi_settings::layout_segment(settings.horizontal));
     ui.set_theme_index(pangyi_settings::theme_segment(settings.theme));
     ui.set_accent_index(settings.accent);

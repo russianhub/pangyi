@@ -10,6 +10,7 @@ pub mod dict;
 pub mod emoji;
 mod gloss_override;
 mod packs;
+mod quick_add;
 mod user_dict;
 pub mod settings;
 pub mod status;
@@ -328,6 +329,31 @@ fn move_sel(delta: isize) {
 }
 
 impl TextService {
+    fn quick_add_candidate(&self, vk: WPARAM, lp: LPARAM) -> Option<quick_add::Candidate> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::VK_RMENU;
+        let key = settings::quick_add_key();
+        if key == 0 || vk.0 != 0x6f + usize::from(key)
+            || !quick_add::matches_chord(
+                key, vk.0, ctrl_only(), shift_down(), key_down(VK_RMENU.0.into()),
+                lp.0 & (1 << 30) != 0,
+            )
+            || !self.active.get()
+            || settings::english()
+            || !unsafe { cand::visible() }
+        {
+            return None;
+        }
+        let buf = self.buf.borrow();
+        if buf.is_empty() {
+            return None;
+        }
+        let (head, russian) = row_at(unsafe { cand::current_index() })?;
+        if user_dict::validate_candidate_head(&head).is_err() {
+            return None;
+        }
+        Some(quick_add::Candidate { head, reading: buf.clone(), russian })
+    }
+
     /// 把文本写进文档（换掉当前组合），不记录自学习。
     /// 用于「候选 + 标点 / 候选 + 大写字母」这类拼接上屏 —— 不能把拼接串
     /// 喂给 note_choice，否则 learned.txt 里会混进「你好,」「你H」这种脏词条。
@@ -669,7 +695,7 @@ impl ITfKeyEventSink_Impl for TextService {
         Ok(())
     }
 
-    fn OnTestKeyDown(&self, _pic: Option<&ITfContext>, wparam: WPARAM, _lp: LPARAM) -> Result<BOOL> {
+    fn OnTestKeyDown(&self, _pic: Option<&ITfContext>, wparam: WPARAM, lp: LPARAM) -> Result<BOOL> {
         // Caps 影子状态维护放最前面：大写分支（下面 line 570 一带）全靠它
         track_caps(wparam);
         // Shift 的按下/抬起在测试回调里直接记，不靠 OnKeyDown/OnKeyUp：
@@ -685,6 +711,9 @@ impl ITfKeyEventSink_Impl for TextService {
         // 除了 Shift 之外进到 TSF 的键都记一笔：status 轮询靠它判「Shift
         // 按住期间有没有夹别的键」（采样 50ms 一拍会漏掉快按快松的字母）
         KEY_ROUTED.store(true, Ordering::Relaxed);
+        if self.quick_add_candidate(wparam, lp).is_some() {
+            return Ok(BOOL(1));
+        }
         // Ctrl+. 切换中文标点（微软同款快捷键）。必须放在「带修饰键放行」之前，
         // 否则永远到不了 OnKeyDown。
         if wparam.0 == 0xBE && ctrl_only() {
@@ -735,7 +764,11 @@ impl ITfKeyEventSink_Impl for TextService {
         Ok(BOOL(0))
     }
 
-    fn OnKeyDown(&self, pic: Option<&ITfContext>, wparam: WPARAM, _lp: LPARAM) -> Result<BOOL> {
+    fn OnKeyDown(&self, pic: Option<&ITfContext>, wparam: WPARAM, lp: LPARAM) -> Result<BOOL> {
+        if let Some(candidate) = self.quick_add_candidate(wparam, lp) {
+            unsafe { cand::quick_add(candidate); }
+            return Ok(BOOL(1));
+        }
         // Ctrl+. 切换中文标点（微软同款快捷键）。OnTestKeyDown 已经 claim 过，
         // 这里直接执行；组合保持原样（微软也不会因它上屏）。
         if wparam.0 == 0xBE && ctrl_only() {

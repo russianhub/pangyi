@@ -137,6 +137,27 @@ pub(super) fn save_change(
     before: String,
     after: String,
 ) -> io::Result<()> {
+    save(dir, kind, description, before, after, false)
+}
+
+pub(super) fn save_required_change(
+    dir: &Path,
+    kind: LexiconKind,
+    description: String,
+    before: String,
+    after: String,
+) -> io::Result<()> {
+    save(dir, kind, description, before, after, true)
+}
+
+fn save(
+    dir: &Path,
+    kind: LexiconKind,
+    description: String,
+    before: String,
+    after: String,
+    require_undo: bool,
+) -> io::Result<()> {
     let path = dir.join(kind.filename());
     if before == after {
         return Ok(());
@@ -149,11 +170,20 @@ pub(super) fn save_change(
         after,
     };
     // An unavailable journal must never prevent the user from saving their words.
-    let mut journal = History::load(dir).ok();
-    let staged = journal.as_mut().is_some_and(|history| {
+    let loaded = History::load(dir);
+    let mut journal = if require_undo { Some(loaded?) } else { loaded.ok() };
+    let staged = if let Some(history) = journal.as_mut() {
         history.pending = Some(Pending::Record(change.clone()));
-        history.save(dir).is_ok()
-    });
+        let saved = history.save(dir);
+        if require_undo {
+            saved?;
+            true
+        } else {
+            saved.is_ok()
+        }
+    } else {
+        false
+    };
     write_atomic(&path, &change.after)?;
     if let Some(mut history) = journal.filter(|_| staged) {
         history.pending = None;

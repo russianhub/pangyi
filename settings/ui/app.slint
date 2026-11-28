@@ -812,6 +812,10 @@ export component MainWindow inherits Window {
     in property <string> version: "4.19.0";
     in-out property <int> page: 0;
     in-out property <string> status: "";
+    in-out property <bool> quick-add: true;
+    in property <int> quick-add-key-index: 1;
+    callback quick-add-toggled(bool);
+    callback quick-add-key-selected(int);
     in property <bool> lex-keyboard-focus;
     property <bool> lex-advanced-open;
     property <string> empty-lex-label: root.lex-search == "" && root.lex-theme-index == 0 ? "还没有词条，可在下方添加" : "没有匹配的词条。";
@@ -1165,12 +1169,39 @@ export component MainWindow inherits Window {
                             Row {
                                 label: "表情模式";
                                 desc: "候选里加入表情符号和表情包";
-                                divider: false;
 
                                 Toggle {
                                     checked <=> root.emoji;
                                     toggled => {
                                         root.emoji-toggled(root.emoji);
+                                    }
+                                }
+                            }
+
+                            Row {
+                                label: "输入时一键加词";
+                                desc: "中文输入时，将高亮候选加入我的词库。";
+                                divider: false;
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    CheckBox {
+                                        text: "启用";
+                                        accessible-label: "启用输入时一键加词";
+                                        checked <=> root.quick-add;
+                                        toggled => { root.quick-add-toggled(root.quick-add); }
+                                    }
+                                    ComboBox {
+                                        accessible-label: "一键加词快捷键";
+                                        model: [
+                                            "Ctrl+Shift+F1", "Ctrl+Shift+F2", "Ctrl+Shift+F3",
+                                            "Ctrl+Shift+F4", "Ctrl+Shift+F5", "Ctrl+Shift+F6",
+                                            "Ctrl+Shift+F7", "Ctrl+Shift+F8", "Ctrl+Shift+F9",
+                                            "Ctrl+Shift+F10", "Ctrl+Shift+F11", "Ctrl+Shift+F12",
+                                        ];
+                                        current-index: root.quick-add-key-index;
+                                        enabled: root.quick-add;
+                                        selected => { root.quick-add-key-selected(self.current-index); }
                                     }
                                 }
                             }

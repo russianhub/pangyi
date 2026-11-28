@@ -496,6 +496,15 @@ fn refresh(ui: &MainWindow, folder: &Path) {
     crate::push_stats(ui, &load_counts(folder));
 }
 
+pub(super) fn refresh_external(ui: &MainWindow, folder: &Path) {
+    let previous = ui.get_lex_undo_id();
+    update_undo(ui, folder);
+    if ui.get_lex_undo_id() != previous {
+        ui.invoke_lex_filter();
+        crate::push_stats(ui, &load_counts(folder));
+    }
+}
+
 fn start_import(
     ui: &MainWindow,
     state: &RefCell<Editor>,

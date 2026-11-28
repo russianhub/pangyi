@@ -19,6 +19,7 @@ use crate::dict::Hit;
 
 #[path = "../../shared/lexicon_format.rs"]
 mod format;
+pub(crate) use self::format::validate_head as validate_candidate_head;
 use self::format::{validate_head, Reading};
 pub(crate) use self::format::{
     analyze_reading, parse_weight, MAX_BYTES, MAX_DATA_LINES, MAX_GLOSS_CHARS,

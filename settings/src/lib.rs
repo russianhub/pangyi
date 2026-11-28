@@ -9,6 +9,9 @@ mod lexicon;
 mod local_files;
 mod settings_file;
 mod updater_cfg;
+#[path = "../../shared/quick_add.rs"]
+pub mod quick_add;
+pub use lexicon::quick_add_word;
 
 pub use colors::{
     accent_name, accent_strong, base_palette, effective_dark, mascot_palette, preview_palette,
