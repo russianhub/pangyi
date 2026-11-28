@@ -5,7 +5,7 @@
 name = "pangyi-settings"
 # 与 ime/Cargo.toml 对齐。推 v* 标签时，release workflow 会把这一行和
 # settings/Cargo.lock 里 pangyi-settings 的版本改成标签版本。
-version = "4.20.0"
+version = "4.21.0"
 edition = "2021"
 description = "旁译设置程序（独立于输入法 DLL，不联网）"
 # 本包源码是 MIT。链接的 Slint 按 LicenseRef-Slint-Royalty-free-2.0 使用，关于页放 AboutSlint。
