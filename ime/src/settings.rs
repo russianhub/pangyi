@@ -7,6 +7,7 @@
 //! 配置存在 %LOCALAPPDATA%\Pangyi\settings.txt，候选窗启动时读一次。
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use crate::quick_add::{parse_key, DEFAULT_KEY};
 use std::sync::Mutex;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
@@ -48,6 +49,27 @@ static mut OUTER_H: i32 = 0;
 static HOT: AtomicI32 = AtomicI32::new(0);
 /// 是否已挂过 TrackMouseEvent（挂一次就能收 WM_MOUSELEAVE）
 static TRACKED: AtomicBool = AtomicBool::new(false);
+// Bit 8 is the enable flag, the low byte holds the configured function key.
+static QUICK_ADD: AtomicUsize = AtomicUsize::new(0x100 | DEFAULT_KEY as usize);
+
+pub(crate) fn quick_add_key() -> u8 {
+    let options = QUICK_ADD.load(Ordering::Relaxed);
+    if options & 0x100 == 0 { 0 } else { options as u8 }
+}
+
+fn quick_add_options(text: &str) -> usize {
+    let mut enabled = true;
+    let mut key = DEFAULT_KEY;
+    for (name, value) in text.lines().filter_map(|line| line.split_once('=')) {
+        let value = value.trim();
+        match name.trim() {
+            "quick_add" => enabled = value == "1" || value.eq_ignore_ascii_case("true"),
+            "quick_add_key" => key = parse_key(value).unwrap_or(key),
+            _ => {}
+        }
+    }
+    (usize::from(enabled) << 8) | usize::from(key)
+}
 
 pub fn cfg_file() -> String {
     let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
@@ -61,6 +83,7 @@ pub fn load() {
         HORIZONTAL.store(s.trim().eq_ignore_ascii_case("h"), Ordering::Relaxed);
     }
     if let Ok(s) = std::fs::read_to_string(cfg_file()) {
+        QUICK_ADD.store(quick_add_options(&s), Ordering::Relaxed);
         for line in s.lines() {
             let mut it = line.splitn(2, '=');
             let (k, v) = match (it.next(), it.next()) {
@@ -105,6 +128,7 @@ pub fn load() {
 /// （打字中途改候选数/主题/窗口几何会闪，不动它们）。
 pub fn reload_modes() {
     if let Ok(s) = std::fs::read_to_string(cfg_file()) {
+        QUICK_ADD.store(quick_add_options(&s), Ordering::Relaxed);
         for line in s.lines() {
             let mut it = line.splitn(2, '=');
             let (Some(k), Some(v)) = (it.next(), it.next()) else {
@@ -125,8 +149,11 @@ pub fn save() {
     if let Some(dir) = std::path::Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    let quick_add = std::fs::read_to_string(&path)
+        .map(|text| quick_add_options(&text))
+        .unwrap_or_else(|_| QUICK_ADD.load(Ordering::Relaxed));
     let body = format!(
-        "max={}\nscale={}\nlayout={}\ntheme={}\nenglish={}\ndebug={}\ncnpunct={}\ntrmode={}\naccent={}\nemoji={}\n",
+        "max={}\nscale={}\nlayout={}\ntheme={}\nenglish={}\ndebug={}\ncnpunct={}\ntrmode={}\naccent={}\nemoji={}\nquick_add={}\nquick_add_key={}\n",
         max_cands(), font_scale(),
         if horizontal() { "h" } else { "v" },
         THEME.load(Ordering::Relaxed),
@@ -135,7 +162,9 @@ pub fn save() {
         if cnpunct() { 1 } else { 0 },
         TRMODE.load(Ordering::Relaxed),
         ACCENT.load(Ordering::Relaxed),
-        if emoji() { 1 } else { 0 }
+        if emoji() { 1 } else { 0 },
+        quick_add >> 8,
+        quick_add & 0xff,
     );
     let _ = std::fs::write(path, body);
 }

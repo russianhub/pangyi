@@ -312,6 +312,29 @@ pub fn edit_lexicon(
     }
 }
 
+/// Add a candidate without replacing any existing custom entry.
+pub fn quick_add_word(dir: &Path, candidate: crate::quick_add::Candidate) -> io::Result<bool> {
+    let mut entry = LexiconEntry {
+        head: candidate.head,
+        reading: candidate.reading,
+        russian: candidate.russian,
+        ..Default::default()
+    };
+    entry.normalize();
+    let kind = LexiconKind::Words;
+    let key = entry.key(kind).map_err(invalid)?;
+    let _lock = lock(dir)?;
+    let before = read_local(&dir.join(kind.filename()))?;
+    if rows(&before, kind).contains_key(&key) {
+        return Ok(false);
+    }
+    let after = rewrite_rows(&before, kind, &HashMap::new(), vec![&entry]);
+    check_size(&after)?;
+    snapshot_locked(dir, false)?;
+    history::save_required_change(dir, kind, "添加 1 条".into(), before, after)?;
+    Ok(true)
+}
+
 fn effective_weight(row: &LexiconEntry) -> i64 {
     parse_weight(&row.extra).ok().flatten().unwrap_or(0)
 }
@@ -822,6 +845,67 @@ pub fn commit_import(dir: &Path, preview: &ImportPreview) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn candidate() -> crate::quick_add::Candidate {
+        crate::quick_add::Candidate {
+            head: "乙".into(),
+            reading: " yi ".into(),
+            russian: "второй".into(),
+        }
+    }
+
+    #[test]
+    fn quick_add_backs_up_deduplicates_and_undoes_exact_bytes() {
+        let dir = test_dir("快捷 слова");
+        let words = dir.join(WORDS_FILE);
+        let glosses = dir.join(GLOSSES_FILE);
+        let original = "\u{feff}# 旧词库\r\n甲\tjia\tпервый\r\n";
+        fs::write(&words, original).unwrap();
+        fs::write(&glosses, "甲\tjia\tстарый\r\n").unwrap();
+
+        assert!(quick_add_word(&dir, candidate()).unwrap());
+        assert_eq!(
+            fs::read_to_string(&words).unwrap(),
+            format!("{original}乙\tyi\tвторой\t\r\n")
+        );
+        let action = undo_action(&dir).unwrap();
+        assert_eq!(action.description, "添加 1 条");
+        let backup = fs::read_dir(dir.join("lexicon-backups")).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(fs::read(backup.join(WORDS_FILE)).unwrap(), original.as_bytes());
+        assert_eq!(fs::read(backup.join(GLOSSES_FILE)).unwrap(), fs::read(glosses).unwrap());
+        let mut duplicate = candidate();
+        duplicate.reading = "yǐ".into();
+        duplicate.russian = "другое значение".into();
+        assert!(!quick_add_word(&dir, duplicate).unwrap());
+        assert_eq!(undo_action(&dir).unwrap().id, action.id);
+        assert_eq!(fs::read_dir(dir.join("lexicon-backups")).unwrap().count(), 1);
+        assert_eq!(undo_last(&dir, Some(&action.id)).unwrap().as_deref(), Some("添加 1 条"));
+        assert_eq!(fs::read(&words).unwrap(), original.as_bytes());
+        assert!(undo_action(&dir).is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quick_add_handles_exclusive_dictionary_and_journal_handles() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = test_dir("词库 занято");
+        let words = dir.join(WORDS_FILE);
+        let journal = dir.join("lexicon-undo.json");
+        let original = "# 原词库\r\n甲\tjia\tпервый\r\n";
+        fs::write(&words, original).unwrap();
+        fs::write(&journal, r#"{"version":1,"entries":[],"pending":null}"#).unwrap();
+        for path in [&words, &journal] {
+            let held = fs::OpenOptions::new().read(true).share_mode(0).open(path).unwrap();
+            assert!(quick_add_word(&dir, candidate()).is_err());
+            drop(held);
+            assert_eq!(fs::read(&words).unwrap(), original.as_bytes());
+            assert!(undo_action(&dir).is_none());
+        }
+        assert!(quick_add_word(&dir, candidate()).unwrap());
+        assert_eq!(undo_action(&dir).unwrap().description, "添加 1 条");
+        fs::remove_dir_all(dir).unwrap();
+    }
     use crate::settings_file::test_dir;
 
     fn import_lexicon(dir: &Path, kind: LexiconKind, text: &str) -> io::Result<(usize, usize)> {

@@ -12,6 +12,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use crate::quick_add::{parse_key, DEFAULT_KEY};
 
 /// 和旧 `save()` 的默认正文一致：UTF-8、无 BOM、`\n`。
 pub const DEFAULT_BODY: &str = "\
@@ -25,10 +26,13 @@ cnpunct=1
 trmode=0
 accent=0
 emoji=0
+quick_add=1
+quick_add_key=2
 ";
 
 const KNOWN_KEYS: &[&str] = &[
     "max", "scale", "layout", "theme", "english", "debug", "cnpunct", "trmode", "accent", "emoji",
+    "quick_add", "quick_add_key",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +47,8 @@ pub struct Settings {
     pub trmode: i32,
     pub accent: i32,
     pub emoji: bool,
+    pub quick_add: bool,
+    pub quick_add_key: u8,
 }
 
 impl Default for Settings {
@@ -58,6 +64,8 @@ impl Default for Settings {
             trmode: 0,
             accent: 0,
             emoji: false,
+            quick_add: true,
+            quick_add_key: DEFAULT_KEY,
         }
     }
 }
@@ -364,6 +372,12 @@ fn apply_kv(settings: &mut Settings, key: &str, value: &str) {
         }
         "english" => settings.english = parse_bool(value),
         "emoji" => settings.emoji = parse_bool(value),
+        "quick_add" => settings.quick_add = parse_bool(value),
+        "quick_add_key" => {
+            if let Some(key) = parse_key(value) {
+                settings.quick_add_key = key;
+            }
+        }
         _ => {}
     }
 }
@@ -544,11 +558,26 @@ cnpunct=1
 trmode=0
 accent=0
 emoji=1
+quick_add=1
+quick_add_key=2
 "
         );
         assert!(apply_one_key("   \n\n", "theme", "2")
             .unwrap()
             .contains("debug=0\n"));
+    }
+
+    #[test]
+    fn quick_add_settings_default_and_round_trip() {
+        let defaults = parse_settings("max=7\n");
+        assert!(defaults.quick_add);
+        assert_eq!(defaults.quick_add_key, DEFAULT_KEY);
+        let text = apply_one_key("max=7\n", "quick_add", "0").unwrap();
+        let text = apply_one_key(&text, "quick_add_key", "10").unwrap();
+        let changed = parse_settings(&text);
+        assert!(!changed.quick_add);
+        assert_eq!(changed.quick_add_key, 10);
+        assert_eq!(changed.max, 7);
     }
 
     #[test]

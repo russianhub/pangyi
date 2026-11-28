@@ -28,6 +28,9 @@ pub struct Item {
 
 static ITEMS: Mutex<Vec<Item>> = Mutex::new(Vec::new());
 static PREEDIT: Mutex<String> = Mutex::new(String::new());
+static ADD_SERIAL: AtomicUsize = AtomicUsize::new(0);
+static ADD_FEEDBACK: AtomicIsize = AtomicIsize::new(0);
+const ADD_FEEDBACK_TIMER: usize = 27;
 static SENTENCE: Mutex<Option<String>> = Mutex::new(None);
 static SEL: AtomicUsize = AtomicUsize::new(0);
 /// 青条选中哪一侧：false = 中文（默认），true = 俄语侧 —— 上屏只出俄语，
@@ -549,11 +552,26 @@ pub unsafe fn detect_theme() {
 
 unsafe extern "system" fn proc_cand(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match msg {
+        crate::quick_add::COMPLETE => {
+            if h == hwnd() && visible() && w.0 == ADD_SERIAL.load(Ordering::Relaxed) {
+                set_add_feedback(h, l.0);
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if w.0 == ADD_FEEDBACK_TIMER => {
+            ADD_FEEDBACK.store(0, Ordering::Relaxed);
+            let _ = KillTimer(h, ADD_FEEDBACK_TIMER);
+            let _ = InvalidateRect(h, None, FALSE);
+            LRESULT(0)
+        }
         // 我们自己把整块客户区画满，不让系统擦背景，避免闪一下白
         WM_ERASEBKGND => LRESULT(1),
         // 窗口被销毁（宿主线程退出等）：把句柄清掉，下次要显示时会重建
         WM_DESTROY | WM_NCDESTROY => {
-            if hwnd().0 == h.0 { set_hwnd(HWND(0)); }
+            if hwnd().0 == h.0 {
+                clear_add_feedback(h);
+                set_hwnd(HWND(0));
+            }
             LRESULT(0)
         }
         WM_PAINT => {
@@ -592,13 +610,23 @@ unsafe extern "system" fn proc_cand(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> 
                 let ty = y + sc(ROW_PAD);
                 SelectObject(dc, f_anno);
                 let mut tx = pad;
-                if !pre.is_empty() {
+                let feedback = crate::quick_add::Feedback::from_message(ADD_FEEDBACK.load(Ordering::Relaxed));
+                let show_pre = feedback.is_none_or(|feedback|
+                    measure(dc, f_anno, &pre).0 + gap + measure(dc, f_anno, feedback.label()).0
+                        <= rc.right - 2 * pad
+                );
+                if !pre.is_empty() && show_pre {
                     SetTextColor(dc, p.faint);
                     let s: Vec<u16> = pre.encode_utf16().collect();
                     TextOutW(dc, tx, ty, &s);
                     tx += measure(dc, f_anno, &pre).0;
                 }
-                if let Some(s) = sent.as_ref() {
+                if let Some(feedback) = feedback {
+                    if show_pre && !pre.is_empty() { tx += gap; }
+                    SetTextColor(dc, p.text);
+                    let tip: Vec<u16> = feedback.label().encode_utf16().collect();
+                    TextOutW(dc, tx, ty, &tip);
+                } else if let Some(s) = sent.as_ref() {
                     tx += gap;
                     SetTextColor(dc, p.cloud);
                     let c: Vec<u16> = "☁".encode_utf16().collect();
@@ -904,7 +932,34 @@ pub unsafe fn page_info() -> (usize, usize) {
     (PAGE_CUR.load(Ordering::Relaxed), PAGE_TOT.load(Ordering::Relaxed))
 }
 
-pub unsafe fn set_preedit(s: &str) { *PREEDIT.lock().unwrap() = s.to_string(); }
+pub unsafe fn set_preedit(s: &str) {
+    let mut preedit = PREEDIT.lock().unwrap();
+    if *preedit != s {
+        clear_add_feedback(hwnd());
+        *preedit = s.to_string();
+    }
+}
+
+unsafe fn clear_add_feedback(h: HWND) {
+    ADD_SERIAL.fetch_add(1, Ordering::Relaxed);
+    if ADD_FEEDBACK.swap(0, Ordering::Relaxed) != 0 && h.0 != 0 {
+        let _ = KillTimer(h, ADD_FEEDBACK_TIMER);
+    }
+}
+
+unsafe fn set_add_feedback(h: HWND, feedback: isize) {
+    ADD_FEEDBACK.store(feedback, Ordering::Relaxed);
+    SetTimer(h, ADD_FEEDBACK_TIMER, 1800, None);
+    let _ = InvalidateRect(h, None, FALSE);
+}
+
+pub(crate) unsafe fn quick_add(candidate: crate::quick_add::Candidate) {
+    let h = hwnd();
+    let serial = ADD_SERIAL.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    if !crate::quick_add::start(h, serial, candidate) {
+        set_add_feedback(h, crate::quick_add::Feedback::Busy as isize);
+    }
+}
 
 pub unsafe fn set_sentence(s: Option<String>) { *SENTENCE.lock().unwrap() = s; }
 
@@ -1358,6 +1413,7 @@ pub unsafe fn show_at(x: i32, y: i32) {
 }
 
 pub unsafe fn hide() {
+    clear_add_feedback(hwnd());
     // 窗口可能是在鼠标下面被藏掉的（那样发不出 WM_MOUSELEAVE）：
     // 悬停状态在这里清掉，不然下次显示会闪一下残留的悬停条
     HOT_ROW.store(-1, Ordering::Relaxed);
