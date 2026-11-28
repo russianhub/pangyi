@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use pangyi_settings::learned::{self, LearnedWord, Preparation};
 use pangyi_settings::{
     commit_import, crowded_reading, delete_entries, edit_lexicon, export_backup, lexicon_entries,
     load_counts, move_weight, preview_import, read_import, undo_action, undo_last, DuplicatePolicy,
@@ -10,7 +11,7 @@ use pangyi_settings::{
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::{LexChoice, MainWindow};
+use crate::{LearnedChoice, LexChoice, MainWindow};
 
 const THEMES: [&str; 3] = [
     include_str!("../../dictionaries/travel.tsv"),
@@ -26,6 +27,14 @@ struct Editor {
     all: Vec<LexiconEntry>,
     selected: HashSet<LexiconEntry>,
     preview: Option<ImportPreview>,
+    learned: Vec<LearnedWord>,
+    learned_draft: bool,
+}
+
+impl Editor {
+    fn save_learned_draft(&self, dir: &Path, entry: &LexiconEntry) -> Option<std::io::Result<bool>> {
+        self.learned_draft.then(|| learned::add(dir, entry.clone()))
+    }
 }
 
 pub(super) fn wire(ui: &MainWindow, dir: &Path) {
@@ -113,6 +122,9 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
         ui.set_lex_selected_count(state.selected.len() as i32);
         ui.set_lex_labels(ModelRc::new(VecModel::from(labels)));
         ui.set_lex_index(0);
+        if ui.get_learned_open() {
+            show_learned(&ui, &folder, &state.learned);
+        }
     });
 
     let weak = ui.as_weak();
@@ -127,14 +139,18 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
         };
         set_fields(&ui, &entry);
         ui.set_lex_editing(true);
-        state.borrow_mut().original = Some(entry);
+        let mut state = state.borrow_mut();
+        state.original = Some(entry);
+        state.learned_draft = false;
     });
 
     let weak = ui.as_weak();
     let state = editor.clone();
     ui.on_lex_clear(move || {
         if let Some(ui) = weak.upgrade() {
-            state.borrow_mut().original = None;
+            let mut state = state.borrow_mut();
+            state.original = None;
+            state.learned_draft = false;
             set_fields(&ui, &LexiconEntry::default());
             ui.set_lex_editing(false);
             ui.set_lex_crowded(false);
@@ -199,6 +215,11 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             extra: ui.get_lex_extra().into(),
             theme: ui.get_lex_theme().into(),
         };
+        let learned_result = state.borrow().save_learned_draft(&folder, &replacement);
+        if let Some(result) = learned_result {
+            report_learned_add(&ui, &folder, result, true);
+            return;
+        }
         let original = state.borrow().original.clone();
         let previous_undo = ui.get_lex_undo_id();
         match edit_lexicon(&folder, kind(&ui), original.as_ref(), Some(replacement)) {
@@ -457,6 +478,134 @@ pub(super) fn wire(ui: &MainWindow, dir: &Path) {
             ui.invoke_show_lex_status(format!("无法打开词典下载目录：{error}").into(), false);
         }
     });
+
+    wire_learned(ui, &editor, dir);
+}
+
+fn wire_learned(ui: &MainWindow, editor: &Rc<RefCell<Editor>>, dir: &Path) {
+    let weak = ui.as_weak();
+    let state = editor.clone();
+    let folder = dir.to_path_buf();
+    ui.on_learned_visibility_changed(move |open| {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut state = state.borrow_mut();
+        if open {
+            state.learned = learned::load(&folder);
+            show_learned(&ui, &folder, &state.learned);
+        } else {
+            state.learned.clear();
+            ui.set_learned_choices(ModelRc::default());
+        }
+    });
+
+    let weak = ui.as_weak();
+    let state = editor.clone();
+    let folder = dir.to_path_buf();
+    ui.on_learned_add(move |head| {
+        let Some(ui) = weak.upgrade() else { return false };
+        match learned::prepare(head.as_str()) {
+            Preparation::Ready(entry) => {
+                report_learned_add(&ui, &folder, learned::add(&folder, entry), false);
+                false
+            }
+            Preparation::NeedsReading(entry) => {
+                ui.set_lex_kind(0);
+                ui.invoke_lex_kind_changed();
+                set_fields(&ui, &entry);
+                state.borrow_mut().learned_draft = true;
+                ui.invoke_show_lex_status("请填写触发拼音，再添加词条。".into(), false);
+                true
+            }
+        }
+    });
+
+    let weak = ui.as_weak();
+    let state = editor.clone();
+    let folder = dir.to_path_buf();
+    ui.on_learned_ignore(move |head| {
+        let Some(ui) = weak.upgrade() else { return };
+        match learned::ignore(&folder, head.as_str()) {
+            Ok(()) => show_learned(&ui, &folder, &state.borrow().learned),
+            Err(error) => ui.invoke_show_lex_status(format!("无法忽略词条：{error}").into(), false),
+        }
+    });
+
+    let weak = ui.as_weak();
+    let state = editor.clone();
+    let folder = dir.to_path_buf();
+    ui.on_learned_restore(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        match learned::restore_ignored(&folder) {
+            Ok(()) => {
+                show_learned(&ui, &folder, &state.borrow().learned);
+                ui.invoke_show_lex_status("已恢复忽略的词。".into(), false);
+            }
+            Err(error) => ui.invoke_show_lex_status(format!("无法恢复忽略的词：{error}").into(), false),
+        }
+    });
+}
+
+fn show_learned(ui: &MainWindow, dir: &Path, words: &[LearnedWord]) {
+    let choices: Vec<_> = learned::suggestions(dir, words).into_iter()
+        .map(|word| LearnedChoice {
+            head: word.head.as_str().into(),
+            usage: format!("使用 {} 次", word.count).into(),
+        })
+        .collect();
+    ui.set_learned_choices(ModelRc::new(VecModel::from(choices)));
+    ui.set_learned_has_ignored(learned::has_ignored(dir));
+}
+
+fn report_learned_add(
+    ui: &MainWindow,
+    dir: &Path,
+    result: std::io::Result<bool>,
+    clear_editor: bool,
+) {
+    match result {
+        Ok(added) => {
+            if added && clear_editor {
+                ui.invoke_lex_clear();
+            }
+            refresh(ui, dir);
+            let message = if added { "已加入我的词库。" } else { "已存在。" };
+            ui.invoke_show_lex_status(message.into(), added);
+        }
+        Err(error) => ui.invoke_show_lex_status(format!("词条未保存：{error}").into(), false),
+    }
+}
+
+#[cfg(test)]
+mod learned_editor_tests {
+    use super::*;
+
+    #[test]
+    fn a_learned_draft_requires_a_confirmed_reading_and_uses_reversible_add() {
+        let dir = std::env::temp_dir().join(format!(
+            "pangyi-learned-editor-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let Preparation::NeedsReading(mut draft) = learned::prepare("行") else {
+            panic!("a polyphonic word must open the editor");
+        };
+        assert_eq!(draft.head, "行");
+        assert!(draft.reading.is_empty());
+        assert!(Editor::default().save_learned_draft(&dir, &draft).is_none());
+
+        let editor = Editor { learned_draft: true, ..Default::default() };
+        assert!(editor.save_learned_draft(&dir, &draft).unwrap().is_err());
+        assert!(!dir.join("user-dict.tsv").exists());
+        draft.reading = "hang".into();
+        draft.extra = "7".into();
+        draft.theme = "我的主题".into();
+        assert!(editor.save_learned_draft(&dir, &draft).unwrap().unwrap());
+        assert!(!editor.save_learned_draft(&dir, &draft).unwrap().unwrap());
+        assert!(lexicon_entries(&dir, LexiconKind::Words).unwrap() == [draft]);
+        assert_eq!(undo_last(&dir, None).unwrap().as_deref(), Some("添加 1 条"));
+        assert!(lexicon_entries(&dir, LexiconKind::Words).unwrap().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 fn kind(ui: &MainWindow) -> LexiconKind {

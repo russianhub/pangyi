@@ -7,6 +7,11 @@ export struct LexChoice {
     checked: bool,
 }
 
+export struct LearnedChoice {
+    head: string,
+    usage: string,
+}
+
 export { Palette }
 
 component LogoMark inherits Rectangle {
@@ -811,6 +816,20 @@ export component MainWindow inherits Window {
 
     in property <string> version: "4.19.0";
     in-out property <int> page: 0;
+    in-out property <bool> learned-open;
+    in property <[LearnedChoice]> learned-choices;
+    in property <bool> learned-has-ignored;
+    callback learned-visibility-changed(bool);
+    callback learned-add(string) -> bool;
+    callback learned-ignore(string);
+    callback learned-restore();
+
+    changed learned-open => { root.learned-visibility-changed(root.learned-open); }
+    changed page => {
+        if root.page != 3 {
+            root.learned-open = false;
+        }
+    }
     in-out property <string> status: "";
     in-out property <bool> quick-add: true;
     in property <int> quick-add-key-index: 1;
@@ -1087,7 +1106,7 @@ export component MainWindow inherits Window {
         VerticalLayout {
             horizontal-stretch: 1;
 
-            Flickable {
+            page-scroll := Flickable {
                 vertical-stretch: 1;
                 content-height: inner.preferred-height;
 
@@ -1432,7 +1451,7 @@ export component MainWindow inherits Window {
                                         placeholder-text: "中文词头";
                                         accessible-label: "中文词头";
                                     }
-                                    LineEdit {
+                                    reading-editor := LineEdit {
                                         text <=> root.lex-reading;
                                         placeholder-text: "触发拼音，例如 pengyou";
                                         accessible-label: "触发拼音";
@@ -1629,6 +1648,67 @@ export component MainWindow inherits Window {
                             Row {
                                 label: "备份包含自定义词条和俄语释义覆盖";
                                 divider: false;
+                            }
+                        }
+
+                        Card {
+                            title: "常用但不在词库里的词";
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 8px;
+
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 8px;
+                                    Button {
+                                        text: root.learned-open ? "收起常用词" : "查看常用词";
+                                        accessible-expandable: true;
+                                        accessible-expanded: root.learned-open;
+                                        accessible-action-expand => { root.learned-open = true; }
+                                        clicked => { root.learned-open = !root.learned-open; }
+                                    }
+                                    if root.learned-open: Button {
+                                        text: "恢复已忽略的词";
+                                        enabled: root.learned-has-ignored;
+                                        clicked => { root.learned-restore(); }
+                                    }
+                                }
+
+                                if root.learned-open && root.learned-choices.length == 0: Hint {
+                                    text: "暂无可加入的常用词。";
+                                }
+                                if root.learned-open && root.learned-choices.length > 0: ListView {
+                                    height: min(root.learned-choices.length * 56px, 224px);
+                                    accessible-label: "常用但不在词库里的词";
+                                    for word[index] in root.learned-choices: Row {
+                                        height: 56px;
+                                        label: word.head;
+                                        desc: word.usage;
+                                        divider: index + 1 < root.learned-choices.length;
+
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            Button {
+                                                text: "加入我的词库";
+                                                accessible-label: "加入我的词库，" + word.head + "，" + word.usage;
+                                                clicked => {
+                                                    if root.learned-add(word.head) {
+                                                        page-scroll.scroll-to({ x: 0px, y: 0px }, ScrollBehavior.instant);
+                                                        reading-editor.focus();
+                                                    }
+                                                }
+                                            }
+                                            Button {
+                                                text: "忽略";
+                                                accessible-label: "忽略 " + word.head + "，" + word.usage;
+                                                clicked => { root.learned-ignore(word.head); }
+                                            }
+                                        }
+                                    }
+                                }
+                                Hint {
+                                    text: "这些词来自输入法在本机的使用记录，不会上传。";
+                                }
                             }
                         }
 
