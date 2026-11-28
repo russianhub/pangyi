@@ -1,6 +1,6 @@
 // 旁译设置窗口。控件用 Fluent；候选预览用旁译自己的色，不把整窗染成强调色。
 // 默认字体用微软雅黑 UI，版本号用 Segoe UI Variable。中文不依赖软件渲染器的西文回落。
-import { AboutSlint, Button, CheckBox, ComboBox, LineEdit, ListView, Palette, TextEdit } from "std-widgets.slint";
+import { AboutSlint, Button, CheckBox, ComboBox, LineEdit, ListView, Palette, ScrollView, TextEdit } from "std-widgets.slint";
 
 export struct LexChoice {
     label: string,
@@ -1677,31 +1677,42 @@ export component MainWindow inherits Window {
                                 if root.learned-open && root.learned-choices.length == 0: Hint {
                                     text: "暂无可加入的常用词。";
                                 }
-                                if root.learned-open && root.learned-choices.length > 0: ListView {
+                                if root.learned-open && root.learned-choices.length > 0: learned-scroll := ScrollView {
                                     height: min(root.learned-choices.length * 56px, 224px);
+                                    content-height: root.learned-choices.length * 56px;
+                                    horizontal-scrollbar-policy: always-off;
+                                    accessible-role: list;
                                     accessible-label: "常用但不在词库里的词";
-                                    for word[index] in root.learned-choices: Row {
-                                        height: 56px;
-                                        label: word.head;
-                                        desc: word.usage;
-                                        divider: index + 1 < root.learned-choices.length;
+                                    accessible-item-count: root.learned-choices.length;
+                                    // Keep all 20 rows in the tab order so focus can scroll them into view.
+                                    VerticalLayout {
+                                        width: learned-scroll.visible-width - (root.learned-choices.length > 4 ? 14px : 0px);
+                                        spacing: 0px;
+                                        alignment: start;
 
-                                        HorizontalLayout {
-                                            spacing: 8px;
-                                            Button {
-                                                text: "加入我的词库";
-                                                accessible-label: "加入我的词库，" + word.head + "，" + word.usage;
-                                                clicked => {
-                                                    if root.learned-add(word.head) {
-                                                        page-scroll.scroll-to({ x: 0px, y: 0px }, ScrollBehavior.instant);
-                                                        reading-editor.focus();
+                                        for word[index] in root.learned-choices: Row {
+                                            height: 56px;
+                                            label: word.head;
+                                            desc: word.usage;
+                                            divider: index + 1 < root.learned-choices.length;
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                Button {
+                                                    text: "加入我的词库";
+                                                    accessible-label: "加入我的词库，" + word.head + "，" + word.usage;
+                                                    clicked => {
+                                                        if root.learned-add(word.head) {
+                                                            page-scroll.scroll-to({ x: 0px, y: 0px }, ScrollBehavior.instant);
+                                                            reading-editor.focus();
+                                                        }
                                                     }
                                                 }
-                                            }
-                                            Button {
-                                                text: "忽略";
-                                                accessible-label: "忽略 " + word.head + "，" + word.usage;
-                                                clicked => { root.learned-ignore(word.head); }
+                                                Button {
+                                                    text: "忽略";
+                                                    accessible-label: "忽略 " + word.head + "，" + word.usage;
+                                                    clicked => { root.learned-ignore(word.head); }
+                                                }
                                             }
                                         }
                                     }
